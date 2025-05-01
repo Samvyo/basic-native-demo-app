@@ -3,6 +3,8 @@
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="false">192.168.0.101</domain>
         <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">10.50.78.173</domain>
+        <domain includeSubdomains="false">172.20.10.7</domain>
     </domain-config>
     <base-config cleartextTrafficPermitted="true">
         <trust-anchors>
