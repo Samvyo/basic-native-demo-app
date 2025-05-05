@@ -171,7 +171,7 @@ const App = () => {
       const data = {roomId};
       const apiUrl =
         Platform.OS === 'android'
-          ? 'http://10.0.2.2:3000/api/create-session-token'
+          ? 'http://localhost:3000/api/create-session-token'
           : 'http://localhost:3000/api/create-session-token';
 
       console.log('Using API URL', {apiUrl});
