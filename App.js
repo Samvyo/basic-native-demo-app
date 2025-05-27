@@ -37,6 +37,9 @@ const App = () => {
   const [isCameraOff, setIsCameraOff] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
 
+  const [isRoomInitialized, setIsRoomInitialized] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
+
   const inputParams = {
     videoResolution: 'hd',
     produce: true,
@@ -103,75 +106,13 @@ const App = () => {
     }
   };
 
-  const requestPermissions = async () => {
-    console.log('Requesting permissions');
-
-    if (Platform.OS === 'android') {
-      try {
-        console.log('Requesting camera permission');
-        const cameraGranted = await PermissionsAndroid.request(
-          PermissionsAndroid.PERMISSIONS.CAMERA,
-          {
-            title: 'Camera Permission',
-            message: 'App needs access to your camera for video calls',
-            buttonNeutral: 'Ask Me Later',
-            buttonNegative: 'Cancel',
-            buttonPositive: 'OK',
-          },
-        );
-
-        console.log('Requesting microphone permission');
-        const audioGranted = await PermissionsAndroid.request(
-          PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
-          {
-            title: 'Microphone Permission',
-            message: 'App needs access to your microphone for calls',
-            buttonNeutral: 'Ask Me Later',
-            buttonNegative: 'Cancel',
-            buttonPositive: 'OK',
-          },
-        );
-
-        console.log('Permission results', {
-          camera: cameraGranted,
-          audio: audioGranted,
-        });
-
-        if (
-          cameraGranted === PermissionsAndroid.RESULTS.GRANTED &&
-          audioGranted === PermissionsAndroid.RESULTS.GRANTED
-        ) {
-          console.log('All permissions granted');
-          return true;
-        } else {
-          console.log('Permissions denied', {
-            camera: cameraGranted,
-            audio: audioGranted,
-          });
-          Alert.alert(
-            'Permissions Denied',
-            'Camera and Audio permissions are required to start the call.',
-          );
-          return false;
-        }
-      } catch (err) {
-        console.log('Permission request error', err);
-        return false;
-      }
-    } else {
-      // For iOS
-      console.log('iOS platform, skipping explicit permission check');
-      return true;
-    }
-  };
-
   const fetchSessionToken = async () => {
     try {
       console.log('Fetching session token', {roomId});
       const data = {roomId};
       const apiUrl =
         Platform.OS === 'android'
-          ? 'http://localhost:3000/api/create-session-token'
+          ? 'http://10.0.2.2:3000/api/create-session-token'
           : 'http://localhost:3000/api/create-session-token';
 
       console.log('Using API URL', {apiUrl});
@@ -199,6 +140,42 @@ const App = () => {
     }
   };
 
+  const initRoom = async () => {
+    console.log('Init room');
+    console.log('Fetching session token');
+
+    if (!roomId.trim()) {
+      console.log('Room ID is empty');
+      Alert.alert('Error', 'Room ID cannot be empty');
+      return;
+    }
+
+    const sessionToken = await fetchSessionToken();
+    if (!sessionToken) {
+      console.log('Session token not found');
+      return;
+    }
+    const initialParams = {
+      sessionToken,
+      roomId,
+      peerName,
+    };
+    try {
+      sdkInstance = await samvyo.RNSdk.init(initialParams);
+      sdkInstanceRef.current = sdkInstance;
+      console.log('SDK initialized successfully', {
+        sdkInstance,
+      });
+
+      sdkInstance.on('initSuccess', () => {
+        console.log('SDK initialized successfully');
+        setIsRoomInitialized(true);
+      });
+    } catch (error) {
+      console.error('Error initialising room:', error);
+    }
+  };
+
   const startCall = async () => {
     console.log('Starting call', {roomId, peerName});
 
@@ -208,24 +185,8 @@ const App = () => {
       return;
     }
 
-    console.log('Checking permissions');
-    const hasPermissions = await requestPermissions();
-    if (!hasPermissions) {
-      console.log('Permission check failed');
-      return;
-    }
-
-    console.log('Fetching session token');
-    const sessionToken = await fetchSessionToken();
-    if (!sessionToken) {
-      console.log('Session token not found');
-      return;
-    }
-
     try {
       const roomParams = {
-        sessionToken,
-        roomId,
         peerName,
         produce: true,
         consume: true,
@@ -240,8 +201,8 @@ const App = () => {
       setCallStatus('Joining room...');
 
       console.log('Joining room with SDK');
-      sdkInstance = await samvyo.RNSdk.joinRoom(roomParams);
-      sdkInstanceRef.current = sdkInstance;
+      console.log('SDK instance', sdkInstanceRef.current);
+      await sdkInstanceRef.current.joinRoom(roomParams);
 
       console.log('Room joined successfully');
       setCallStatus('Call started successfully!');
@@ -249,12 +210,12 @@ const App = () => {
       // Set up event listeners
       console.log('Setting up event listeners');
 
-      sdkInstance.on('newPeer', ({peerId, peerName, type}) => {
+      sdkInstanceRef.current.on('newPeer', ({peerId, peerName, type}) => {
         console.log('New peer joined', {peerId, peerName, type});
         addPeer(peerId, peerName, type);
       });
 
-      sdkInstance.on('videoStart', ({peerId, videoTrack, type}) => {
+      sdkInstanceRef.current.on('videoStart', ({peerId, videoTrack, type}) => {
         console.log('Video started for peer', {
           peerId,
           type,
@@ -267,17 +228,24 @@ const App = () => {
         updatePeerVideo(peerId, videoTrack, type);
       });
 
-      sdkInstance.on('videoEnd', ({peerId, type}) => {
+      sdkInstanceRef.current.on('videoEnd', ({peerId, type}) => {
         console.log('Video ended for peer', {peerId, type});
         removePeerVideo(peerId, type);
       });
 
-      sdkInstance.on('deviceListUpdated', () => {
+      sdkInstanceRef.current.on('deviceListUpdated', () => {
         console.log('Device list updated');
         getAllDevices();
       });
 
-      sdkInstance.on('micStart', ({peerId, audioTrack, type}) => {
+            // Add processing completed event listener
+            sdkInstanceRef.current.on('processingCompleted', (details) => {
+              console.log(`Processing has been completed`, details);
+              // Alert.alert('Success', 'Processing has been completed on the room');
+              setIsProcessing(false);
+            });
+
+      sdkInstanceRef.current.on('micStart', ({peerId, audioTrack, type}) => {
         console.log('Mic started for peer', {
           peerId,
           hasAudioTrack: !!audioTrack,
@@ -286,27 +254,27 @@ const App = () => {
         updatePeerAudio(peerId, audioTrack, type);
       });
 
-      sdkInstance.on('micEnd', ({peerId}) => {
+      sdkInstanceRef.current.on('micEnd', ({peerId}) => {
         console.log('Mic ended for peer', {peerId});
         removePeerAudio(peerId);
       });
 
-      sdkInstance.on('peerMuted', ({peerId, type}) => {
+      sdkInstanceRef.current.on('peerMuted', ({peerId, type}) => {
         console.log('Peer muted', {peerId, type});
         updatePeerMuteStatus(peerId, true);
       });
 
-      sdkInstance.on('peerUnMuted', ({peerId, type}) => {
+      sdkInstanceRef.current.on('peerUnMuted', ({peerId, type}) => {
         console.log('Peer unmuted', {peerId, type});
         updatePeerMuteStatus(peerId, false);
       });
 
-      sdkInstance.on('peerLeft', ({peerId}) => {
+      sdkInstanceRef.current.on('peerLeft', ({peerId}) => {
         console.log('Peer left', {peerId});
         removePeer(peerId);
       });
 
-      sdkInstance.on('ssVideoStart', ({peerId, videoTrack, type}) => {
+      sdkInstanceRef.current.on('ssVideoStart', ({peerId, videoTrack, type}) => {
         console.log('Screen share started', {
           peerId,
           hasVideoTrack: !!videoTrack,
@@ -316,12 +284,12 @@ const App = () => {
         addScreenShare(peerId, videoTrack, type);
       });
 
-      sdkInstance.on('ssVideoStop', ({peerId, videoTrack, type}) => {
+      sdkInstanceRef.current.on('ssVideoStop', ({peerId, videoTrack, type}) => {
         console.log('Screen share stopped', {peerId, type});
         removeScreenShare(peerId);
       });
 
-      sdkInstance.on('error', ({code, text}) => {
+      sdkInstanceRef.current.on('error', ({code, text}) => {
         console.log(`SDK error: ${text} (Code: ${code})`);
         Alert.alert('Error', `${text} (Code: ${code})`);
       });
@@ -346,6 +314,7 @@ const App = () => {
         sdkInstanceRef.current = null;
 
         showThankYouMessage();
+        setIsRoomInitialized(false);
       } else {
         console.log('No active SDK instance to leave room');
       }
@@ -709,7 +678,6 @@ const App = () => {
   const peersArray = Array.from(peers.values());
   const screenSharesArray = Array.from(screenShares.values());
 
-  // Log component render with peer/share counts
   console.log('Rendering main component', {
     peerCount: peersArray.length,
     screenShareCount: screenSharesArray.length,
@@ -718,6 +686,30 @@ const App = () => {
     isCameraOff,
     isScreenSharing,
   });
+
+  const startProcessing = async () => {
+    try {
+      setIsProcessing(true);
+      const inputFiles = [
+        {
+          url: "https://cvr-org-823047296136-1.sgp1.digitaloceanspaces.com/videos/file_example_MP4_1920_18MG.mp4",
+          type: "mp4"
+        },
+        {
+          url: "https://cvr-org-823047296136-1.sgp1.digitaloceanspaces.com/videos/sample-30s.mp4",
+          type: "mp4"
+        }
+      ];
+
+      await sdkInstanceRef.current.startProcessing({
+        inputFiles,
+      });
+      console.log("Processing Videos Started");
+    } catch (error) {
+      console.error('Error starting processing:', error);
+      setIsProcessing(false);
+    }
+  };
 
   return (
     <SafeAreaView style={styles.container}>
@@ -743,158 +735,179 @@ const App = () => {
           />
 
           <View style={styles.buttonRow}>
-            <TouchableOpacity
-              style={[styles.button, styles.primaryButton]}
-              onPress={startCall}
-              disabled={!roomId.trim()}>
-              <Text style={styles.buttonText}>Join Room</Text>
-            </TouchableOpacity>
+            {!isRoomInitialized ? (
+              <TouchableOpacity
+                style={[styles.button, styles.primaryButton]}
+                onPress={initRoom}
+                disabled={!roomId.trim()}>
+                <Text style={styles.buttonText}>Init Room</Text>
+              </TouchableOpacity>
+            ) : (
+              <>
+                <TouchableOpacity
+                  style={[styles.button, styles.primaryButton]}
+                  onPress={startCall}
+                  disabled={!roomId.trim()}>
+                  <Text style={styles.buttonText}>Join Room</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.button, styles.secondaryButton]}
+                  onPress={startProcessing}
+                  disabled={isProcessing}>
+                  <Text style={styles.buttonText}>
+                    {isProcessing ? 'Processing...' : 'Start Processing'}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.button, styles.secondaryButton]}
+                  onPress={leaveRoom}
+                  disabled={!sdkInstanceRef.current}>
+                  <Text style={styles.buttonText}>Leave Room</Text>
+                </TouchableOpacity>
+              </>
+            )}
 
-            <TouchableOpacity
-              style={[styles.button, styles.secondaryButton]}
-              onPress={leaveRoom}
-              disabled={!sdkInstanceRef.current}>
-              <Text style={styles.buttonText}>Leave Room</Text>
-            </TouchableOpacity>
+            <Text style={styles.statusText}>{callStatus}</Text>
           </View>
 
-          <Text style={styles.statusText}>{callStatus}</Text>
+          <TouchableOpacity
+            style={styles.deviceButton}
+            onPress={() => {
+              console.log('Opening device selection modal');
+              setShowDeviceModal(true);
+            }}>
+            <Text style={styles.deviceButtonText}>Select Devices</Text>
+          </TouchableOpacity>
+
+          {sdkInstanceRef.current && (
+            <View style={styles.mediaControls}>
+              <TouchableOpacity
+                style={[
+                  styles.mediaButton,
+                  isMuted && styles.activeMediaButton,
+                ]}
+                onPress={toggleMute}>
+                <Text style={styles.mediaButtonText}>
+                  {isMuted ? 'Unmute' : 'Mute'}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.mediaButton,
+                  isCameraOff && styles.activeMediaButton,
+                ]}
+                onPress={toggleCamera}>
+                <Text style={styles.mediaButtonText}>
+                  {isCameraOff ? 'Turn Camera On' : 'Turn Camera Off'}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.mediaButton,
+                  isScreenSharing && styles.activeMediaButton,
+                ]}
+                onPress={toggleScreenShare}>
+                <Text style={styles.mediaButtonText}>
+                  {isScreenSharing ? 'Stop Share' : 'Share Screen'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          )}
+
+          {screenSharesArray.length > 0 && (
+            <View style={styles.sectionContainer}>
+              <Text style={styles.sectionTitle}>Screen Shares</Text>
+              {screenSharesArray.map(renderScreenShare)}
+            </View>
+          )}
+
+          {peersArray.length > 0 && (
+            <View style={styles.sectionContainer}>
+              <Text style={styles.sectionTitle}>Participants</Text>
+              {peersArray.map(renderPeerVideo)}
+            </View>
+          )}
         </View>
 
-        <TouchableOpacity
-          style={styles.deviceButton}
-          onPress={() => {
-            console.log('Opening device selection modal');
-            setShowDeviceModal(true);
+        {/* Device Selection Modal */}
+        <Modal
+          visible={showDeviceModal}
+          transparent={true}
+          animationType="slide"
+          onRequestClose={() => {
+            console.log('Closing device modal via back button');
+            setShowDeviceModal(false);
           }}>
-          <Text style={styles.deviceButtonText}>Select Devices</Text>
-        </TouchableOpacity>
+          <View style={styles.modalContainer}>
+            <View style={styles.modalContent}>
+              <Text style={styles.modalTitle}>Select Devices</Text>
 
-        {sdkInstanceRef.current && (
-          <View style={styles.mediaControls}>
-            <TouchableOpacity
-              style={[styles.mediaButton, isMuted && styles.activeMediaButton]}
-              onPress={toggleMute}>
-              <Text style={styles.mediaButtonText}>
-                {isMuted ? 'Unmute' : 'Mute'}
-              </Text>
-            </TouchableOpacity>
+              <Text style={styles.deviceSectionTitle}>Audio Devices</Text>
+              {audioDevices.length > 0 ? (
+                audioDevices.map(device => (
+                  <TouchableOpacity
+                    key={device.deviceId}
+                    style={[
+                      styles.deviceOption,
+                      selectedAudioDeviceId === device.deviceId &&
+                        styles.selectedDevice,
+                    ]}
+                    onPress={() => {
+                      console.log('Audio device selected', {
+                        deviceId: device.deviceId,
+                        label: device.label,
+                      });
+                      changeAudioDevice(device.deviceId);
+                    }}>
+                    <Text style={styles.deviceOptionText}>{device.label}</Text>
+                  </TouchableOpacity>
+                ))
+              ) : (
+                <Text style={styles.noDevicesText}>
+                  No audio devices available
+                </Text>
+              )}
 
-            <TouchableOpacity
-              style={[
-                styles.mediaButton,
-                isCameraOff && styles.activeMediaButton,
-              ]}
-              onPress={toggleCamera}>
-              <Text style={styles.mediaButtonText}>
-                {isCameraOff ? 'Turn Camera On' : 'Turn Camera Off'}
-              </Text>
-            </TouchableOpacity>
+              <Text style={styles.deviceSectionTitle}>Video Devices</Text>
+              {videoDevices.length > 0 ? (
+                videoDevices.map(device => (
+                  <TouchableOpacity
+                    key={device.deviceId}
+                    style={[
+                      styles.deviceOption,
+                      selectedVideoDeviceId === device.deviceId &&
+                        styles.selectedDevice,
+                    ]}
+                    onPress={() => {
+                      console.log('Video device selected', {
+                        deviceId: device.deviceId,
+                        label: device.label,
+                      });
+                      changeVideoDevice(device.deviceId);
+                    }}>
+                    <Text style={styles.deviceOptionText}>{device.label}</Text>
+                  </TouchableOpacity>
+                ))
+              ) : (
+                <Text style={styles.noDevicesText}>
+                  No video devices available
+                </Text>
+              )}
 
-            <TouchableOpacity
-              style={[
-                styles.mediaButton,
-                isScreenSharing && styles.activeMediaButton,
-              ]}
-              onPress={toggleScreenShare}>
-              <Text style={styles.mediaButtonText}>
-                {isScreenSharing ? 'Stop Share' : 'Share Screen'}
-              </Text>
-            </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.closeModalButton}
+                onPress={() => {
+                  console.log('Closing device modal');
+                  setShowDeviceModal(false);
+                }}>
+                <Text style={styles.closeModalButtonText}>Close</Text>
+              </TouchableOpacity>
+            </View>
           </View>
-        )}
-
-        {screenSharesArray.length > 0 && (
-          <View style={styles.sectionContainer}>
-            <Text style={styles.sectionTitle}>Screen Shares</Text>
-            {screenSharesArray.map(renderScreenShare)}
-          </View>
-        )}
-
-        {peersArray.length > 0 && (
-          <View style={styles.sectionContainer}>
-            <Text style={styles.sectionTitle}>Participants</Text>
-            {peersArray.map(renderPeerVideo)}
-          </View>
-        )}
+        </Modal>
       </ScrollView>
-
-      {/* Device Selection Modal */}
-      <Modal
-        visible={showDeviceModal}
-        transparent={true}
-        animationType="slide"
-        onRequestClose={() => {
-          console.log('Closing device modal via back button');
-          setShowDeviceModal(false);
-        }}>
-        <View style={styles.modalContainer}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Select Devices</Text>
-
-            <Text style={styles.deviceSectionTitle}>Audio Devices</Text>
-            {audioDevices.length > 0 ? (
-              audioDevices.map(device => (
-                <TouchableOpacity
-                  key={device.deviceId}
-                  style={[
-                    styles.deviceOption,
-                    selectedAudioDeviceId === device.deviceId &&
-                      styles.selectedDevice,
-                  ]}
-                  onPress={() => {
-                    console.log('Audio device selected', {
-                      deviceId: device.deviceId,
-                      label: device.label,
-                    });
-                    changeAudioDevice(device.deviceId);
-                  }}>
-                  <Text style={styles.deviceOptionText}>{device.label}</Text>
-                </TouchableOpacity>
-              ))
-            ) : (
-              <Text style={styles.noDevicesText}>
-                No audio devices available
-              </Text>
-            )}
-
-            <Text style={styles.deviceSectionTitle}>Video Devices</Text>
-            {videoDevices.length > 0 ? (
-              videoDevices.map(device => (
-                <TouchableOpacity
-                  key={device.deviceId}
-                  style={[
-                    styles.deviceOption,
-                    selectedVideoDeviceId === device.deviceId &&
-                      styles.selectedDevice,
-                  ]}
-                  onPress={() => {
-                    console.log('Video device selected', {
-                      deviceId: device.deviceId,
-                      label: device.label,
-                    });
-                    changeVideoDevice(device.deviceId);
-                  }}>
-                  <Text style={styles.deviceOptionText}>{device.label}</Text>
-                </TouchableOpacity>
-              ))
-            ) : (
-              <Text style={styles.noDevicesText}>
-                No video devices available
-              </Text>
-            )}
-
-            <TouchableOpacity
-              style={styles.closeModalButton}
-              onPress={() => {
-                console.log('Closing device modal');
-                setShowDeviceModal(false);
-              }}>
-              <Text style={styles.closeModalButtonText}>Close</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
     </SafeAreaView>
   );
 };
@@ -941,6 +954,7 @@ const styles = StyleSheet.create({
   },
   primaryButton: {
     backgroundColor: '#4285F4',
+    marginBottom: 10,
   },
   secondaryButton: {
     backgroundColor: '#EA4335',
