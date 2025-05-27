@@ -17,6 +17,7 @@ import {
 import axios from 'axios';
 import samvyo from 'basic-rn-sdk-3.0';
 import {RTCView} from 'react-native-webrtc';
+import {startScreenShare, getScreenShareTrack} from 'samvyo-react-native-sdk';
 
 const App = () => {
   const [callStatus, setCallStatus] = useState('');
@@ -172,7 +173,7 @@ const App = () => {
       const apiUrl =
         Platform.OS === 'android'
           ? 'http://10.0.2.2:3000/api/create-session-token'
-          : 'http://localhost:3000/api/create-session-token';
+          : 'http://192.168.0.166:3000/api/create-session-token';
 
       console.log('Using API URL', {apiUrl});
 
@@ -208,12 +209,12 @@ const App = () => {
       return;
     }
 
-    console.log('Checking permissions');
-    const hasPermissions = await requestPermissions();
-    if (!hasPermissions) {
-      console.log('Permission check failed');
-      return;
-    }
+    // console.log('Checking permissions');
+    // const hasPermissions = await requestPermissions();
+    // if (!hasPermissions) {
+    //   console.log('Permission check failed');
+    //   return;
+    // }
 
     console.log('Fetching session token');
     const sessionToken = await fetchSessionToken();

@@ -1,10 +1,21 @@
 # Resolve react_native_pods.rb with node to allow for hoisting
+#  def node_require(script)
+#    # Resolve script with node to allow for hoisting
+#    require Pod::Executable.execute_command('node', ['-p',
+#      "require.resolve(
+#        '#{script}',
+#        {paths: [process.argv[1]]},
+#      )", __dir__]).strip
+#  end
+
+# # Use it to require both react-native's and this package's scripts:
+#  node_require('react-native/scripts/react_native_pods.rb')
+#  node_require('react-native-permissions/scripts/setup.rb')
 require Pod::Executable.execute_command('node', ['-p',
   'require.resolve(
     "react-native/scripts/react_native_pods.rb",
     {paths: [process.argv[1]]},
-  )', __dir__]).strip
-
+  )', __dir__]).strip 
 platform :ios, min_ios_version_supported
 prepare_react_native_project!
 
@@ -23,6 +34,21 @@ target 'basicNativeApp' do
     :app_path => "#{Pod::Config.instance.installation_root}/.."
   )
 
+  # setup_permissions([
+  #   'Camera',
+  #   'Microphone'
+  # ])
+  # Add your video conferencing library
+  # Replace 'YourLibraryName' with your actual library name
+  pod 'samvyo-react-native-sdk', :path => '../node_modules/basic-rn-sdk-3.0',:modular_headers => true
+  
+  # Explicitly add WebRTC-related dependencies
+  # These should already be handled by your library's podspec but adding them
+  # explicitly can help avoid linking issues
+  pod 'react-native-webrtc', :path => '../node_modules/react-native-webrtc', :modular_headers => true
+  pod 'ReactNativeIncallManager', :path => '../node_modules/react-native-incall-manager',:modular_headers => true
+
+
   post_install do |installer|
     # https://github.com/facebook/react-native/blob/main/packages/react-native/scripts/react_native_pods.rb#L197-L202
     react_native_post_install(
@@ -31,5 +57,29 @@ target 'basicNativeApp' do
       :mac_catalyst_enabled => false,
       # :ccache_enabled => true
     )
+
+    # WebRTC-specific configurations
+    # installer.pods_project.targets.each do |target|
+    #   target.build_configurations.each do |config|
+    #     # Disable bitcode for WebRTC
+    #     config.build_settings['ENABLE_BITCODE'] = 'NO'
+        
+    #     # Fix for arm64 architecture on simulator
+    #     config.build_settings['EXCLUDED_ARCHS[sdk=iphonesimulator*]'] = 'arm64'
+        
+    #     # Ensure proper permissions for camera and microphone
+    #     # This adds privacy descriptions to Info.plist if they don't exist
+    #     if target.name == 'basicNativeApp' || target.name == 'YourLibraryName'
+    #       config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] ||= ['$(inherited)']
+    #       config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] << 'PERMISSION_CAMERA=1'
+    #       config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] << 'PERMISSION_MICROPHONE=1'
+    #     end
+        
+    #     # Ensure background modes are enabled for audio/voip
+    #     if target.name == 'basicNativeApp'
+    #       # You might need to manually add background modes in Info.plist
+    #     end
+    #   end
+    # end
   end
 end
