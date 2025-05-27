@@ -36,6 +36,7 @@ const App = () => {
   const [isMuted, setIsMuted] = useState(false);
   const [isCameraOff, setIsCameraOff] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
 
   const [isRoomInitialized, setIsRoomInitialized] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -238,12 +239,23 @@ const App = () => {
         getAllDevices();
       });
 
-            // Add processing completed event listener
-            sdkInstanceRef.current.on('processingCompleted', (details) => {
-              console.log(`Processing has been completed`, details);
-              // Alert.alert('Success', 'Processing has been completed on the room');
-              setIsProcessing(false);
-            });
+    
+      sdkInstanceRef.current.on('processingCompleted', (details) => {
+        console.log(`Processing has been completed`, details);
+        setIsProcessing(false);
+      });
+
+      sdkInstanceRef.current.on('recordingStarted', ({ peerId, startTime }) => {
+        console.log(`Recording has been started in this room at ${startTime}`);
+        alert(`Recording has been started on the room at: ${startTime}`);
+        setIsRecording(true);
+      });
+
+      sdkInstanceRef.current.on('recordingEnded', () => {
+        console.log(`Recording has been ended on this room at`);
+        alert(`Recording has been ended on the room at`);
+        setIsRecording(false);
+      });
 
       sdkInstanceRef.current.on('micStart', ({peerId, audioTrack, type}) => {
         console.log('Mic started for peer', {
@@ -586,6 +598,23 @@ const App = () => {
     }
   };
 
+  const toggleRecording = async () => {
+    try {
+      if (isRecording) {
+        await sdkInstanceRef.current.stopRecording();
+        console.log("Recording Ended");
+      } else {
+        await sdkInstanceRef.current.startRecording({
+          recordingType: "av"
+        });
+        console.log("Recording started");
+      }
+    } catch (error) {
+      console.error('Error toggling recording:', error);
+      Alert.alert('Error', 'Failed to toggle recording');
+    }
+  };
+
   const changeAudioDevice = async deviceId => {
     try {
       console.log('Changing audio device', {
@@ -701,10 +730,10 @@ const App = () => {
         }
       ];
 
-      await sdkInstanceRef.current.startProcessing({
+      const res = await sdkInstanceRef.current.startProcessing({
         inputFiles,
       });
-      console.log("Processing Videos Started");
+      console.log("Processing Videos Started", res);
     } catch (error) {
       console.error('Error starting processing:', error);
       setIsProcessing(false);
@@ -813,6 +842,23 @@ const App = () => {
                   {isScreenSharing ? 'Stop Share' : 'Share Screen'}
                 </Text>
               </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.mediaButton,
+                  isRecording && styles.activeMediaButton,
+                ]}
+                onPress={toggleRecording}>
+                <Text style={styles.mediaButtonText}>
+                  {isRecording ? 'Stop Recording' : 'Start Recording'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          )}
+
+          {isRecording && (
+            <View style={styles.recordingIndicator}>
+              <Text style={styles.recordingText}>Recording in Progress</Text>
             </View>
           )}
 
@@ -1148,6 +1194,17 @@ const styles = StyleSheet.create({
     color: 'white',
     fontSize: 16,
     fontWeight: '600',
+  },
+  recordingIndicator: {
+    backgroundColor: '#ff4444',
+    padding: 8,
+    borderRadius: 4,
+    marginBottom: 16,
+    alignItems: 'center',
+  },
+  recordingText: {
+    color: 'white',
+    fontWeight: 'bold',
   },
 });
 
