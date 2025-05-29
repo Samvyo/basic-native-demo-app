@@ -114,7 +114,7 @@ const App = () => {
       const apiUrl =
         Platform.OS === 'android'
           ? 'http://10.0.2.2:3000/api/create-session-token'
-          : 'http://localhost:3000/api/create-session-token';
+          : 'http://192.168.0.128:3600/api/create-session-token';
 
       console.log('Using API URL', {apiUrl});
 
@@ -239,13 +239,12 @@ const App = () => {
         getAllDevices();
       });
 
-    
-      sdkInstanceRef.current.on('processingCompleted', (details) => {
+      sdkInstanceRef.current.on('processingCompleted', details => {
         console.log(`Processing has been completed`, details);
         setIsProcessing(false);
       });
 
-      sdkInstanceRef.current.on('recordingStarted', ({ peerId, startTime }) => {
+      sdkInstanceRef.current.on('recordingStarted', ({peerId, startTime}) => {
         console.log(`Recording has been started in this room at ${startTime}`);
         alert(`Recording has been started on the room at: ${startTime}`);
         setIsRecording(true);
@@ -286,15 +285,18 @@ const App = () => {
         removePeer(peerId);
       });
 
-      sdkInstanceRef.current.on('ssVideoStart', ({peerId, videoTrack, type}) => {
-        console.log('Screen share started', {
-          peerId,
-          hasVideoTrack: !!videoTrack,
-          videoTrackType: videoTrack ? typeof videoTrack : 'none',
-          type,
-        });
-        addScreenShare(peerId, videoTrack, type);
-      });
+      sdkInstanceRef.current.on(
+        'ssVideoStart',
+        ({peerId, videoTrack, type}) => {
+          console.log('Screen share started', {
+            peerId,
+            hasVideoTrack: !!videoTrack,
+            videoTrackType: videoTrack ? typeof videoTrack : 'none',
+            type,
+          });
+          addScreenShare(peerId, videoTrack, type);
+        },
+      );
 
       sdkInstanceRef.current.on('ssVideoStop', ({peerId, videoTrack, type}) => {
         console.log('Screen share stopped', {peerId, type});
@@ -602,12 +604,12 @@ const App = () => {
     try {
       if (isRecording) {
         await sdkInstanceRef.current.stopRecording();
-        console.log("Recording Ended");
+        console.log('Recording Ended');
       } else {
         await sdkInstanceRef.current.startRecording({
-          recordingType: "av"
+          recordingType: 'av',
         });
-        console.log("Recording started");
+        console.log('Recording started');
       }
     } catch (error) {
       console.error('Error toggling recording:', error);
@@ -721,19 +723,19 @@ const App = () => {
       setIsProcessing(true);
       const inputFiles = [
         {
-          url: "https://cvr-org-823047296136-1.sgp1.digitaloceanspaces.com/videos/file_example_MP4_1920_18MG.mp4",
-          type: "mp4"
+          url: 'https://cvr-org-823047296136-1.sgp1.digitaloceanspaces.com/videos/file_example_MP4_1920_18MG.mp4',
+          type: 'mp4',
         },
         {
-          url: "https://cvr-org-823047296136-1.sgp1.digitaloceanspaces.com/videos/sample-30s.mp4",
-          type: "mp4"
-        }
+          url: 'https://cvr-org-823047296136-1.sgp1.digitaloceanspaces.com/videos/sample-30s.mp4',
+          type: 'mp4',
+        },
       ];
 
       const res = await sdkInstanceRef.current.startProcessing({
         inputFiles,
       });
-      console.log("Processing Videos Started", res);
+      console.log('Processing Videos Started', res);
     } catch (error) {
       console.error('Error starting processing:', error);
       setIsProcessing(false);
