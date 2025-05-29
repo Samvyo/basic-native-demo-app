@@ -1682,7 +1682,7 @@ PODS:
     - ReactCommon/turbomodule/bridging
     - ReactCommon/turbomodule/core
     - Yoga
-  - samvyo-react-native-sdk (1.0.113):
+  - samvyo-react-native-sdk (1.0.114):
     - React-Core
     - react-native-webrtc
   - SocketRocket (0.7.1)
@@ -1992,7 +1992,7 @@ SPEC CHECKSUMS:
   ReactCodegen: c63eda03ba1d94353fb97b031fc84f75a0d125ba
   ReactCommon: 76d2dc87136d0a667678668b86f0fca0c16fdeb0
   RNPermissions: 2f4329b43b0ea61ffbfdd7c389441942136b4cf5
-  samvyo-react-native-sdk: dde6f0d8a1bed347ee377245e44c94f7411771a6
+  samvyo-react-native-sdk: 31330c754996b152b588145baa68be84842a495e
   SocketRocket: d4aabe649be1e368d1318fdf28a022d714d65748
   Yoga: c758bfb934100bb4bf9cbaccb52557cee35e8bdf
 
