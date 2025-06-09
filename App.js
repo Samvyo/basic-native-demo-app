@@ -172,6 +172,41 @@ const App = () => {
         console.log('SDK initialized successfully');
         setIsRoomInitialized(true);
       });
+
+      // Set up all event listeners
+      sdkInstance.on('processingStarted', ({ processingStartTime, requestId }) => {
+        console.log(`Processing has been started`, { processingStartTime, requestId });
+        Alert.alert('Processing Started', `Processing has been started at: ${new Date(processingStartTime).toLocaleString()}`);
+      });
+
+      sdkInstance.on('processingCompleted', (details) => {
+        console.log(`Processing has been completed`, details);
+        Alert.alert('processing completed');
+        setIsProcessing(false);
+      });
+
+      sdkInstance.on('processingError', (details) => {
+        console.error('Processing error:', details);
+        setIsProcessing(false);
+        Alert.alert('Processing Error', 'An error occurred during processing');
+      });
+
+      sdkInstance.on('recordingStarted', ({ peerId, startTime }) => {
+        console.log(`Recording has been started in this room at ${startTime}`);
+        Alert.alert('Recording Started', `Recording has been started on the room at: ${new Date(startTime).toLocaleString()}`);
+        setIsRecording(true);
+      });
+
+      sdkInstance.on('recordingEnded', () => {
+        console.log(`Recording has been ended on this room`);
+        Alert.alert('Recording Ended', `Recording has been ended on the room`);
+        setIsRecording(false);
+      });
+
+      sdkInstance.on('error', ({code, text}) => {
+        console.log(`SDK error: ${text} (Code: ${code})`);
+        Alert.alert('Error', `${text} (Code: ${code})`);
+      });
     } catch (error) {
       console.error('Error initialising room:', error);
     }
@@ -301,11 +336,6 @@ const App = () => {
       sdkInstanceRef.current.on('ssVideoStop', ({peerId, videoTrack, type}) => {
         console.log('Screen share stopped', {peerId, type});
         removeScreenShare(peerId);
-      });
-
-      sdkInstanceRef.current.on('error', ({code, text}) => {
-        console.log(`SDK error: ${text} (Code: ${code})`);
-        Alert.alert('Error', `${text} (Code: ${code})`);
       });
     } catch (err) {
       console.log('Join room error', err);
@@ -613,7 +643,7 @@ const App = () => {
       }
     } catch (error) {
       console.error('Error toggling recording:', error);
-      Alert.alert('Error', 'Failed to toggle recording');
+      Alert.alert('Error', 'Failed to toggle recording: ' + (error.message || 'Unknown error'));
     }
   };
 
