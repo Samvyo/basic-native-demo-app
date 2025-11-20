@@ -15,7 +15,7 @@ import {
   Modal,
 } from 'react-native';
 import axios from 'axios';
-import samvyo from 'basic-rn-sdk-3.0';
+import samvyo from './lib/rnsdk.cjs.js';
 import {RTCView} from 'react-native-webrtc';
 
 const App = () => {
@@ -113,8 +113,8 @@ const App = () => {
       const data = {roomId};
       const apiUrl =
         Platform.OS === 'android'
-          ? 'http://10.0.2.2:3000/api/create-session-token'
-          : 'http://192.168.0.128:3600/api/create-session-token';
+          ? 'http://10.0.2.2:5100/api/create-session-token'
+          : 'http://192.168.0.128:5100/api/create-session-token';
 
       console.log('Using API URL', {apiUrl});
 
