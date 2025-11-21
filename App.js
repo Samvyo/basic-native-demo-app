@@ -13,6 +13,7 @@ import {
   FlatList,
   TouchableOpacity,
   Modal,
+  Switch,
 } from 'react-native';
 import axios from 'axios';
 import samvyo from './lib/rnsdk.cjs.js';
@@ -33,13 +34,58 @@ const App = () => {
 
   const [peers, setPeers] = useState(new Map());
   const [screenShares, setScreenShares] = useState(new Map());
+  const peersRef = useRef(peers);
+  useEffect(() => {
+    peersRef.current = peers;
+  }, [peers]);
   const [isMuted, setIsMuted] = useState(false);
   const [isCameraOff, setIsCameraOff] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
+  const [isLiveStreaming, setIsLiveStreaming] = useState(false);
 
   const [isRoomInitialized, setIsRoomInitialized] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [roomType, setRoomType] = useState('conferencing');
+  const [participantRole, setParticipantRole] = useState('moderator');
+  const [handRaised, setHandRaised] = useState(false);
+  const [handRaiseEvents, setHandRaiseEvents] = useState([]);
+  const [recentReactions, setRecentReactions] = useState([]);
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatInput, setChatInput] = useState('');
+  const [selectedChatReceiver, setSelectedChatReceiver] = useState('everyone');
+  const [chatTargetModalVisible, setChatTargetModalVisible] = useState(false);
+  const [transcriptionEntries, setTranscriptionEntries] = useState([]);
+  const [transcriptionActive, setTranscriptionActive] = useState(false);
+  const [liveStreamUrl, setLiveStreamUrl] = useState('');
+  const [liveStreamKey, setLiveStreamKey] = useState('');
+  const [stageSettings, setStageSettings] = useState({
+    stageStatus: false,
+    stagePeers: [],
+    backStageStatus: false,
+    backStagePeers: [],
+  });
+  const [stagePeersInput, setStagePeersInput] = useState('');
+  const [backStagePeersInput, setBackStagePeersInput] = useState('');
+  const [generalPermissions, setGeneralPermissions] = useState({
+    allowScreenShare: true,
+    noOfScreenShare: 1,
+    noOfUpgradeRequests: 5,
+  });
+  const [presenterPermissions, setPresenterPermissions] = useState({
+    allowPresenterRaiseHand: true,
+    allowPresenterPublicChat: true,
+    allowPresenterPrivateChat: true,
+  });
+  const [participantPermissionsState, setParticipantPermissionsState] =
+    useState({
+      allowParticipantRaiseHand: true,
+      allowParticipantPublicChat: true,
+      allowParticipantPrivateChat: true,
+    });
+  const [roomLocked, setRoomLocked] = useState(false);
+  const [waitingPeers, setWaitingPeers] = useState([]);
+  const [pendingUpgradeRequests, setPendingUpgradeRequests] = useState([]);
 
   const inputParams = {
     videoResolution: 'hd',
@@ -62,10 +108,42 @@ const App = () => {
     backgroundImage: '',
   };
 
+  const resolvedPeerType =
+    roomType === 'event'
+      ? participantRole === 'moderator'
+        ? 'moderator'
+        : participantRole === 'presenter'
+        ? 'participant'
+        : 'attendee'
+      : participantRole === 'moderator'
+      ? 'moderator'
+      : 'participant';
+
+  const canProduceMedia = resolvedPeerType !== 'attendee';
+  const isModeratorRole = resolvedPeerType === 'moderator';
+  const isModeratorRoleRef = useRef(isModeratorRole);
+  useEffect(() => {
+    isModeratorRoleRef.current = isModeratorRole;
+  }, [isModeratorRole]);
+  const emojiList = ['👍', '❤️', '🎉', '👏', '🔥', '😂', '😮', '🙌', '✨'];
+
   useEffect(() => {
     console.log('App initialized, fetching devices');
     getAllDevices();
   }, []);
+
+  useEffect(() => {
+    if (roomType === 'event') {
+      if (!['moderator', 'presenter', 'attendee'].includes(participantRole)) {
+        setParticipantRole('attendee');
+      }
+      return;
+    }
+
+    if (!['moderator', 'participant'].includes(participantRole)) {
+      setParticipantRole('participant');
+    }
+  }, [roomType, participantRole]);
 
   const getAllDevices = async () => {
     try {
@@ -223,14 +301,16 @@ const App = () => {
 
     try {
       const roomParams = {
+        ...inputParams,
         peerName,
-        produce: true,
+        roomType,
+        peerType: resolvedPeerType,
+        produce: canProduceMedia,
         consume: true,
-        produceAudio: inputParams.produceAudio,
-        produceVideo: inputParams.produceVideo,
+        produceAudio: canProduceMedia && !isMuted,
+        produceVideo: canProduceMedia && !isCameraOff,
         audioDeviceId: selectedAudioDeviceId,
         videoDeviceId: selectedVideoDeviceId,
-        ...inputParams,
       };
 
       console.log('Room params', roomParams);
@@ -242,6 +322,14 @@ const App = () => {
 
       console.log('Room joined successfully');
       setCallStatus('Call started successfully!');
+      setHandRaised(false);
+      setHandRaiseEvents([]);
+      setRecentReactions([]);
+      setChatMessages([]);
+      setTranscriptionEntries([]);
+      setPendingUpgradeRequests([]);
+      setWaitingPeers([]);
+      setRoomLocked(false);
 
       // Set up event listeners
       console.log('Setting up event listeners');
@@ -337,6 +425,54 @@ const App = () => {
         console.log('Screen share stopped', {peerId, type});
         removeScreenShare(peerId);
       });
+
+      sdkInstanceRef.current.on('customMessage', handleCustomMessageEvent);
+      sdkInstanceRef.current.on('handRaise', handleHandRaiseEvent);
+      sdkInstanceRef.current.on('liveStreamingStarted', () => {
+        setIsLiveStreaming(true);
+        Alert.alert('Live Streaming', 'Live streaming has started');
+      });
+      sdkInstanceRef.current.on('liveStreamingEnded', () => {
+        setIsLiveStreaming(false);
+        Alert.alert('Live Streaming', 'Live streaming has ended');
+      });
+      sdkInstanceRef.current.on('transcription', handleTranscriptionEvent);
+      sdkInstanceRef.current.on('micForcedOff', ({message}) => {
+        setIsMuted(true);
+        Alert.alert('Microphone', message || 'Moderator muted you');
+      });
+      sdkInstanceRef.current.on('upgradeRequestReceived', handleUpgradeRequestReceived);
+      sdkInstanceRef.current.on('upgradeRequestCancelled', handleUpgradeRequestCancelled);
+      sdkInstanceRef.current.on('upgradeRequestRejected', ({message}) => {
+        Alert.alert('Upgrade Request', message || 'Request rejected');
+      });
+      sdkInstanceRef.current.on('upgradeLimitReached', ({message}) => {
+        Alert.alert('Upgrade Limit', message);
+      });
+      sdkInstanceRef.current.on(
+        'screenShareLimitReached',
+        ({message}) => Alert.alert('Screen Share Limit', message),
+      );
+      sdkInstanceRef.current.on('roomLockStatusChanged', ({locked, message}) => {
+        setRoomLocked(!!locked);
+        if (message) {
+          Alert.alert('Room Lock Status', message);
+        }
+      });
+      sdkInstanceRef.current.on('peersWaiting', ({peersWaiting, count}) => {
+        setWaitingPeers(peersWaiting || []);
+        if (isModeratorRole && count) {
+          Alert.alert('Waiting Room', `${count} participant(s) waiting for approval`);
+        }
+      });
+      sdkInstanceRef.current.on('participantUpgraded', handleParticipantRoleUpdate);
+      sdkInstanceRef.current.on('participantDowngraded', handleParticipantRoleUpdate);
+      sdkInstanceRef.current.on('upgraded', () => {
+        setCallStatus('You are now a presenter');
+      });
+      sdkInstanceRef.current.on('downgraded', () => {
+        setCallStatus('You are now a viewer');
+      });
     } catch (err) {
       console.log('Join room error', err);
       setCallStatus('Failed to join room.');
@@ -355,6 +491,23 @@ const App = () => {
 
         setPeers(new Map());
         setScreenShares(new Map());
+        setHandRaised(false);
+        setHandRaiseEvents([]);
+        setRecentReactions([]);
+        setChatMessages([]);
+        setTranscriptionEntries([]);
+        setPendingUpgradeRequests([]);
+        setWaitingPeers([]);
+        setIsLiveStreaming(false);
+        setRoomLocked(false);
+        setStageSettings({
+          stageStatus: false,
+          stagePeers: [],
+          backStageStatus: false,
+          backStagePeers: [],
+        });
+        setStagePeersInput('');
+        setBackStagePeersInput('');
         sdkInstanceRef.current = null;
 
         showThankYouMessage();
@@ -510,6 +663,560 @@ const App = () => {
       }
       return newPeers;
     });
+  };
+
+  const handleParticipantRoleUpdate = ({peerId, participantType}) => {
+    setPeers(prevPeers => {
+      const updated = new Map(prevPeers);
+      const peer = updated.get(peerId);
+      if (peer) {
+        updated.set(peerId, {...peer, participantType});
+      }
+      return updated;
+    });
+  };
+
+  const handleCustomMessageEvent = message => {
+    if (!message) {
+      return;
+    }
+
+    if (message.type === 'chat') {
+      const displayName =
+        message.from === 'me'
+          ? 'You'
+          : peersRef.current.get(message.from)?.peerName || message.from;
+      setChatMessages(prev => {
+        const next = [
+          ...prev,
+          {
+            id: `${Date.now()}-${Math.random()}`,
+            from: displayName,
+            text: message.data,
+            scope: message.messageType === 'private' ? 'private' : 'public',
+            timestamp: new Date().toLocaleTimeString(),
+          },
+        ];
+        return next.slice(-200);
+      });
+      return;
+    }
+
+    let payload = message.customData || message.data;
+    if (typeof payload === 'string') {
+      try {
+        payload = JSON.parse(payload);
+      } catch {
+        payload = null;
+      }
+    }
+
+    if (!payload) {
+      return;
+    }
+
+    if (payload.type === 'emoji-reaction') {
+      const displayName =
+        message.from === 'me'
+          ? 'You'
+          : peersRef.current.get(message.from)?.peerName || message.from;
+      setRecentReactions(prev => {
+        const next = [
+          ...prev.slice(-5),
+          {
+            id: `${Date.now()}-${Math.random()}`,
+            emoji: payload.emoji,
+            from: displayName,
+          },
+        ];
+        return next;
+      });
+      return;
+    }
+
+    if (payload.type === 'roomSetting:stageSettings') {
+      setStageSettings({
+        stageStatus: !!payload.stageStatus,
+        stagePeers: payload.stagePeers || [],
+        backStageStatus: !!payload.backStageStatus,
+        backStagePeers: payload.backStagePeers || [],
+      });
+      setStagePeersInput((payload.stagePeers || []).join(','));
+      setBackStagePeersInput((payload.backStagePeers || []).join(','));
+      return;
+    }
+
+    if (payload.type === 'roomSetting:generalSettings') {
+      setGeneralPermissions(prev => ({
+        ...prev,
+        allowScreenShare:
+          payload.allowScreenShare !== undefined
+            ? payload.allowScreenShare
+            : prev.allowScreenShare,
+        noOfScreenShare:
+          payload.noOfScreenShare !== undefined
+            ? payload.noOfScreenShare
+            : prev.noOfScreenShare,
+        noOfUpgradeRequests:
+          payload.noOfUpgradeRequests !== undefined
+            ? payload.noOfUpgradeRequests
+            : prev.noOfUpgradeRequests,
+      }));
+      return;
+    }
+
+    if (payload.type === 'roomSetting:presenterSettings') {
+      setPresenterPermissions(prev => ({
+        ...prev,
+        ...(payload.presenterSettings || {}),
+      }));
+      return;
+    }
+
+    if (payload.type === 'roomSetting:participantSettings') {
+      setParticipantPermissionsState(prev => ({
+        ...prev,
+        ...(payload.participantSettings || {}),
+      }));
+    }
+  };
+
+  const handleHandRaiseEvent = ({
+    peerId,
+    handRaised: isRaised,
+    peerName,
+    upgradeRequest,
+  }) => {
+    const displayName =
+      peerName || peersRef.current.get(peerId)?.peerName || peerId;
+
+    setHandRaiseEvents(prev => {
+      const filtered = prev.filter(item => item.peerId !== peerId);
+      if (!isRaised) {
+        return filtered;
+      }
+      return [
+        {
+          peerId,
+          peerName: displayName,
+          upgradeRequest: !!upgradeRequest,
+          timestamp: Date.now(),
+        },
+        ...filtered,
+      ].slice(0, 25);
+    });
+
+    if (peerId === sdkInstanceRef.current?.data?.inputParams?.peerId) {
+      setHandRaised(!!isRaised);
+    }
+  };
+
+  const handleTranscriptionEvent = ({
+    transcript,
+    speaker,
+    isFinal,
+    timestamp,
+  }) => {
+    if (!transcript) {
+      return;
+    }
+    setTranscriptionEntries(prev => {
+      const next = [
+        ...prev,
+        {
+          id: `${Date.now()}-${Math.random()}`,
+          transcript,
+          speaker: speaker || 'unknown',
+          isFinal: !!isFinal,
+          timestamp: timestamp || Date.now(),
+        },
+      ];
+      return next.slice(-50);
+    });
+  };
+
+  const handleUpgradeRequestReceived = ({peerId, moderator, message}) => {
+    if (!isModeratorRoleRef.current) {
+      Alert.alert(
+        'Moderator Invite',
+        message || 'Moderator wants to upgrade you to presenter',
+        [
+          {
+            text: 'Decline',
+            style: 'cancel',
+            onPress: () =>
+              sdkInstanceRef.current?.rejectUpgradeRequest?.(moderator),
+          },
+          {
+            text: 'Accept',
+            onPress: () =>
+              sdkInstanceRef.current?.acceptUpgradeRequest?.(true, false),
+          },
+        ],
+      );
+      return;
+    }
+    const displayName =
+      peersRef.current.get(peerId)?.peerName || peerId || 'Unknown participant';
+    setPendingUpgradeRequests(prev => {
+      const filtered = prev.filter(req => req.peerId !== peerId);
+      return [
+        {
+          peerId,
+          moderator,
+          message: message || `${displayName} requested presenter access`,
+          timestamp: Date.now(),
+        },
+        ...filtered,
+      ];
+    });
+    Alert.alert(
+      'Upgrade Request',
+      `${displayName} would like to become a presenter.`,
+    );
+  };
+
+  const handleUpgradeRequestCancelled = ({peerId}) => {
+    setPendingUpgradeRequests(prev =>
+      prev.filter(request => request.peerId !== peerId),
+    );
+  };
+
+  const toggleHandRaise = async () => {
+    if (!sdkInstanceRef.current) {
+      return;
+    }
+    try {
+      if (handRaised) {
+        await sdkInstanceRef.current.dropHand();
+        setHandRaised(false);
+      } else {
+        await sdkInstanceRef.current.raiseHand();
+        setHandRaised(true);
+      }
+    } catch (error) {
+      Alert.alert('Hand Raise', error?.message || 'Unable to update hand status');
+    }
+  };
+
+  const requestPresenterUpgrade = async () => {
+    if (!sdkInstanceRef.current) {
+      return;
+    }
+    try {
+      const response = await sdkInstanceRef.current.requestUpgradeToPresenter();
+      if (!response?.success) {
+        Alert.alert('Upgrade Request', response?.reason || 'Upgrade request failed');
+      } else {
+        Alert.alert('Upgrade Request', 'Request sent to moderators');
+      }
+    } catch (error) {
+      Alert.alert('Upgrade Request', error?.message || 'Unable to request upgrade');
+    }
+  };
+
+  const sendReaction = async emoji => {
+    if (!sdkInstanceRef.current) {
+      return;
+    }
+    try {
+      await sdkInstanceRef.current.sendCustomMessage(
+        JSON.stringify({
+          type: 'emoji-reaction',
+          emoji,
+          emojiType: emoji,
+        }),
+        'custom',
+      );
+      setRecentReactions(prev => [
+        ...prev.slice(-5),
+        {id: `${Date.now()}-${Math.random()}`, emoji, from: 'You'},
+      ]);
+    } catch (error) {
+      Alert.alert('Emoji', error?.message || 'Unable to send reaction');
+    }
+  };
+
+  const sendChatMessage = async () => {
+    if (!chatInput.trim() || !sdkInstanceRef.current) {
+      return;
+    }
+    try {
+      const receiverPeerId =
+        selectedChatReceiver === 'everyone' ? null : selectedChatReceiver;
+      const scope = receiverPeerId ? 'private' : 'public';
+      await sdkInstanceRef.current.sendCustomMessage(
+        chatInput.trim(),
+        'chat',
+        receiverPeerId,
+        resolvedPeerType,
+        scope,
+      );
+      setChatMessages(prev => [
+        ...prev,
+        {
+          id: `${Date.now()}-${Math.random()}`,
+          from: 'You',
+          text: chatInput.trim(),
+          scope,
+          timestamp: new Date().toLocaleTimeString(),
+        },
+      ]);
+      setChatInput('');
+    } catch (error) {
+      Alert.alert('Chat', error?.message || 'Unable to send message');
+    }
+  };
+
+  const applyGeneralPermissions = async () => {
+    if (!sdkInstanceRef.current) {
+      return;
+    }
+    try {
+      await sdkInstanceRef.current.handleRoomSettingsGeneral(generalPermissions);
+      Alert.alert('Permissions', 'General settings updated');
+    } catch (error) {
+      Alert.alert('Permissions', error?.message || 'Unable to update general settings');
+    }
+  };
+
+  const applyPresenterPermissions = async () => {
+    if (!sdkInstanceRef.current) {
+      return;
+    }
+    try {
+      await sdkInstanceRef.current.handlePresenterSettings(presenterPermissions);
+      Alert.alert('Permissions', 'Presenter settings updated');
+    } catch (error) {
+      Alert.alert(
+        'Permissions',
+        error?.message || 'Unable to update presenter settings',
+      );
+    }
+  };
+
+  const applyParticipantPermissions = async () => {
+    if (!sdkInstanceRef.current) {
+      return;
+    }
+    try {
+      await sdkInstanceRef.current.handleParticipantSettings(
+        participantPermissionsState,
+      );
+      Alert.alert('Permissions', 'Participant settings updated');
+    } catch (error) {
+      Alert.alert(
+        'Permissions',
+        error?.message || 'Unable to update participant settings',
+      );
+    }
+  };
+
+  const applyStageSettingsChanges = async () => {
+    if (!sdkInstanceRef.current) {
+      return;
+    }
+    const stagePeers = stagePeersInput
+      .split(',')
+      .map(p => p.trim())
+      .filter(Boolean);
+    const backStagePeers = backStagePeersInput
+      .split(',')
+      .map(p => p.trim())
+      .filter(Boolean);
+    try {
+      await sdkInstanceRef.current.handleRoomSettingsStage({
+        stageStatus: stageSettings.stageStatus,
+        stagePeers,
+        backStageStatus: stageSettings.backStageStatus,
+        backStagePeers,
+      });
+      Alert.alert('Stage', 'Stage settings updated');
+    } catch (error) {
+      Alert.alert('Stage', error?.message || 'Unable to update stage settings');
+    }
+  };
+
+  const toggleSelfStagePosition = async target => {
+    if (!sdkInstanceRef.current) {
+      return;
+    }
+    const myPeerId = sdkInstanceRef.current?.data?.inputParams?.peerId;
+    if (!myPeerId) {
+      return;
+    }
+    const currentStagePeers = new Set(stageSettings.stagePeers || []);
+    const currentBackPeers = new Set(stageSettings.backStagePeers || []);
+    currentStagePeers.delete(myPeerId);
+    currentBackPeers.delete(myPeerId);
+
+    if (target === 'stage') {
+      currentStagePeers.add(myPeerId);
+    } else if (target === 'backstage') {
+      currentBackPeers.add(myPeerId);
+    }
+
+    try {
+      await sdkInstanceRef.current.handleRoomSettingsStage({
+        stageStatus: true,
+        stagePeers: Array.from(currentStagePeers),
+        backStageStatus: true,
+        backStagePeers: Array.from(currentBackPeers),
+      });
+    } catch (error) {
+      Alert.alert('Stage', error?.message || 'Unable to update stage position');
+    }
+  };
+
+  const startLiveStreamingSession = async () => {
+    if (!sdkInstanceRef.current || !liveStreamUrl.trim() || !liveStreamKey.trim()) {
+      Alert.alert('Live Streaming', 'Please enter stream URL and key');
+      return;
+    }
+    try {
+      const response = await sdkInstanceRef.current.startLiveStreaming({
+        streamUrl: liveStreamUrl.trim(),
+        streamKey: liveStreamKey.trim(),
+      });
+      if (response?.success === false) {
+        throw new Error(response?.text || response?.reason);
+      }
+      setIsLiveStreaming(true);
+    } catch (error) {
+      Alert.alert('Live Streaming', error?.message || 'Unable to start streaming');
+    }
+  };
+
+  const stopLiveStreamingSession = async () => {
+    if (!sdkInstanceRef.current) {
+      return;
+    }
+    try {
+      await sdkInstanceRef.current.stopLiveStreaming();
+      setIsLiveStreaming(false);
+    } catch (error) {
+      Alert.alert('Live Streaming', error?.message || 'Unable to stop streaming');
+    }
+  };
+
+  const startTranscriptionSession = async () => {
+    if (!sdkInstanceRef.current) {
+      return;
+    }
+    try {
+      const response = await sdkInstanceRef.current.startTranscription();
+      if (response?.success === false) {
+        throw new Error(response?.reason);
+      }
+      setTranscriptionActive(true);
+    } catch (error) {
+      Alert.alert(
+        'Transcription',
+        error?.message || 'Unable to start transcription',
+      );
+    }
+  };
+
+  const stopTranscriptionSession = async () => {
+    if (!sdkInstanceRef.current) {
+      return;
+    }
+    try {
+      await sdkInstanceRef.current.stopTranscription();
+      setTranscriptionActive(false);
+    } catch (error) {
+      Alert.alert(
+        'Transcription',
+        error?.message || 'Unable to stop transcription',
+      );
+    }
+  };
+
+  const handleUpgradeParticipantPress = peerId => {
+    if (!sdkInstanceRef.current) {
+      return;
+    }
+    sdkInstanceRef.current
+      .upgradeParticipant(peerId)
+      .then(() => {
+        setPendingUpgradeRequests(prev =>
+          prev.filter(request => request.peerId !== peerId),
+        );
+        Alert.alert('Upgrade', 'Participant upgrade sent');
+      })
+      .catch(error =>
+        Alert.alert('Upgrade', error?.message || 'Unable to upgrade participant'),
+      );
+  };
+
+  const handleDowngradeParticipantPress = peerId => {
+    if (!sdkInstanceRef.current) {
+      return;
+    }
+    sdkInstanceRef.current
+      .downgradeParticipant(peerId)
+      .then(() => Alert.alert('Downgrade', 'Participant downgrade sent'))
+      .catch(error =>
+        Alert.alert('Downgrade', error?.message || 'Unable to downgrade participant'),
+      );
+  };
+
+  const handleModeratorSendUpgradeRequest = (peerId, status = true) => {
+    if (!sdkInstanceRef.current) {
+      return;
+    }
+    sdkInstanceRef.current
+      .sendUpgradeRequest(peerId, status)
+      .then(() => {
+        Alert.alert(
+          'Moderator Action',
+          status ? 'Upgrade request sent' : 'Upgrade request cancelled',
+        );
+      })
+      .catch(error =>
+        Alert.alert(
+          'Moderator Action',
+          error?.message || 'Unable to send moderator upgrade request',
+        ),
+      );
+  };
+
+  const lowerParticipantHand = async peerId => {
+    if (!sdkInstanceRef.current) {
+      return;
+    }
+    try {
+      await sdkInstanceRef.current.dropHand(peerId, true);
+      setHandRaiseEvents(prev =>
+        prev.filter(request => request.peerId !== peerId),
+      );
+    } catch (error) {
+      Alert.alert('Hand Raise', error?.message || 'Unable to lower hand');
+    }
+  };
+
+  const admitWaitingPeer = async peerId => {
+    if (!sdkInstanceRef.current) {
+      return;
+    }
+    try {
+      await sdkInstanceRef.current.allowRoomJoin(peerId);
+      setWaitingPeers(prev => prev.filter(peer => peer.peerId !== peerId));
+    } catch (error) {
+      Alert.alert('Waiting Room', error?.message || 'Unable to admit participant');
+    }
+  };
+
+  const denyWaitingPeer = async peerId => {
+    if (!sdkInstanceRef.current) {
+      return;
+    }
+    try {
+      await sdkInstanceRef.current.denyRoomJoin(peerId);
+      setWaitingPeers(prev => prev.filter(peer => peer.peerId !== peerId));
+    } catch (error) {
+      Alert.alert('Waiting Room', error?.message || 'Unable to deny participant');
+    }
   };
 
   // Screen share functions
@@ -708,6 +1415,25 @@ const App = () => {
         {peer.isCameraOff && (
           <Text style={styles.cameraOffIndicator}>Camera Off</Text>
         )}
+        {isModeratorRole && peer.peerId !== localPeerId && (
+          <View style={styles.inlineOptions}>
+            <TouchableOpacity
+              style={styles.smallButton}
+              onPress={() => handleUpgradeParticipantPress(peer.peerId)}>
+              <Text style={styles.smallButtonText}>Upgrade</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.smallButton}
+              onPress={() => handleDowngradeParticipantPress(peer.peerId)}>
+              <Text style={styles.smallButtonText}>Downgrade</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.smallButton}
+              onPress={() => handleModeratorSendUpgradeRequest(peer.peerId, true)}>
+              <Text style={styles.smallButtonText}>Request</Text>
+            </TouchableOpacity>
+          </View>
+        )}
       </View>
     );
   };
@@ -738,6 +1464,17 @@ const App = () => {
 
   const peersArray = Array.from(peers.values());
   const screenSharesArray = Array.from(screenShares.values());
+  const roleOptions =
+    roomType === 'event'
+      ? ['moderator', 'presenter', 'attendee']
+      : ['moderator', 'participant'];
+  const chatTargets = ['everyone', ...peersArray.map(peer => peer.peerId)];
+  const waitingPeersList = waitingPeers || [];
+  const pendingRequests = pendingUpgradeRequests || [];
+  const stageStatusLabel = stageSettings.stageStatus
+    ? 'Stage mode enabled'
+    : 'Stage mode disabled';
+  const localPeerId = sdkInstanceRef.current?.data?.inputParams?.peerId || 'me';
 
   console.log('Rendering main component', {
     peerCount: peersArray.length,
@@ -795,6 +1532,57 @@ const App = () => {
             }}
           />
 
+          <View style={styles.sectionContainer}>
+            <Text style={styles.sectionTitle}>Room Type</Text>
+            <View style={styles.inlineOptions}>
+              {['conferencing', 'event', 'p2p'].map(type => (
+                <TouchableOpacity
+                  key={type}
+                  style={[
+                    styles.pillButton,
+                    roomType === type && styles.pillButtonActive,
+                  ]}
+                  onPress={() => setRoomType(type)}>
+                  <Text
+                    style={[
+                      styles.pillButtonText,
+                      roomType === type && styles.pillButtonTextActive,
+                    ]}>
+                    {type.toUpperCase()}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+
+          <View style={styles.sectionContainer}>
+            <Text style={styles.sectionTitle}>Join As</Text>
+            <View style={styles.inlineOptions}>
+              {roleOptions.map(role => (
+                <TouchableOpacity
+                  key={role}
+                  style={[
+                    styles.pillButton,
+                    participantRole === role && styles.pillButtonActive,
+                  ]}
+                  onPress={() => setParticipantRole(role)}>
+                  <Text
+                    style={[
+                      styles.pillButtonText,
+                      participantRole === role && styles.pillButtonTextActive,
+                    ]}>
+                    {role.toUpperCase()}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <Text style={styles.helperText}>
+              {resolvedPeerType === 'attendee'
+                ? 'Attendees join in view-only mode.'
+                : 'Moderators and presenters can publish audio/video.'}
+            </Text>
+          </View>
+
           <View style={styles.buttonRow}>
             {!isRoomInitialized ? (
               <TouchableOpacity
@@ -827,9 +1615,8 @@ const App = () => {
                 </TouchableOpacity>
               </>
             )}
-
-            <Text style={styles.statusText}>{callStatus}</Text>
           </View>
+          <Text style={styles.statusText}>{callStatus}</Text>
 
           <TouchableOpacity
             style={styles.deviceButton}
@@ -847,7 +1634,8 @@ const App = () => {
                   styles.mediaButton,
                   isMuted && styles.activeMediaButton,
                 ]}
-                onPress={toggleMute}>
+                onPress={toggleMute}
+                disabled={!canProduceMedia}>
                 <Text style={styles.mediaButtonText}>
                   {isMuted ? 'Unmute' : 'Mute'}
                 </Text>
@@ -858,7 +1646,8 @@ const App = () => {
                   styles.mediaButton,
                   isCameraOff && styles.activeMediaButton,
                 ]}
-                onPress={toggleCamera}>
+                onPress={toggleCamera}
+                disabled={!canProduceMedia}>
                 <Text style={styles.mediaButtonText}>
                   {isCameraOff ? 'Turn Camera On' : 'Turn Camera Off'}
                 </Text>
@@ -869,7 +1658,8 @@ const App = () => {
                   styles.mediaButton,
                   isScreenSharing && styles.activeMediaButton,
                 ]}
-                onPress={toggleScreenShare}>
+                onPress={toggleScreenShare}
+                disabled={!canProduceMedia}>
                 <Text style={styles.mediaButtonText}>
                   {isScreenSharing ? 'Stop Share' : 'Share Screen'}
                 </Text>
@@ -880,7 +1670,8 @@ const App = () => {
                   styles.mediaButton,
                   isRecording && styles.activeMediaButton,
                 ]}
-                onPress={toggleRecording}>
+                onPress={toggleRecording}
+                disabled={!isModeratorRole}>
                 <Text style={styles.mediaButtonText}>
                   {isRecording ? 'Stop Recording' : 'Start Recording'}
                 </Text>
@@ -891,6 +1682,369 @@ const App = () => {
           {isRecording && (
             <View style={styles.recordingIndicator}>
               <Text style={styles.recordingText}>Recording in Progress</Text>
+            </View>
+          )}
+
+          <View style={styles.sectionContainer}>
+            <Text style={styles.sectionTitle}>Engagement</Text>
+            <View style={styles.inlineOptions}>
+              <TouchableOpacity
+                style={styles.smallButton}
+                onPress={toggleHandRaise}>
+                <Text style={styles.smallButtonText}>
+                  {handRaised ? 'Lower Hand' : 'Raise Hand'}
+                </Text>
+              </TouchableOpacity>
+              {resolvedPeerType === 'attendee' && (
+                <TouchableOpacity
+                  style={styles.smallButton}
+                  onPress={requestPresenterUpgrade}>
+                  <Text style={styles.smallButtonText}>Request Upgrade</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+            <View style={styles.emojiRow}>
+              {emojiList.map(emoji => (
+                <TouchableOpacity
+                  key={emoji}
+                  style={styles.emojiButton}
+                  onPress={() => sendReaction(emoji)}>
+                  <Text style={styles.emojiText}>{emoji}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            {recentReactions.length > 0 && (
+              <View style={styles.reactionList}>
+                {recentReactions.slice(-6).reverse().map(reaction => (
+                  <Text key={reaction.id} style={styles.reactionText}>
+                    {reaction.from}: {reaction.emoji}
+                  </Text>
+                ))}
+              </View>
+            )}
+          </View>
+
+          {handRaiseEvents.length > 0 && (
+            <View style={styles.sectionContainer}>
+              <Text style={styles.sectionTitle}>Hands Raised</Text>
+              {handRaiseEvents.map(event => (
+                <View key={event.peerId} style={styles.noticeCard}>
+                  <Text style={styles.noticeTitle}>
+                    {event.peerName}{' '}
+                    {event.upgradeRequest ? '(Upgrade request)' : ''}
+                  </Text>
+                  {isModeratorRole && (
+                    <View style={styles.inlineOptions}>
+                      <TouchableOpacity
+                        style={styles.smallButton}
+                        onPress={() => handleUpgradeParticipantPress(event.peerId)}>
+                        <Text style={styles.smallButtonText}>Upgrade</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.smallButton}
+                        onPress={() => lowerParticipantHand(event.peerId)}>
+                        <Text style={styles.smallButtonText}>Lower</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                </View>
+              ))}
+            </View>
+          )}
+
+          <View style={styles.sectionContainer}>
+            <Text style={styles.sectionTitle}>Chat</Text>
+            <View style={styles.chatTargetRow}>
+              <Text style={styles.helperText}>
+                Sending to:{' '}
+                {selectedChatReceiver === 'everyone'
+                  ? 'Everyone'
+                  : selectedChatReceiver}
+              </Text>
+              <TouchableOpacity
+                style={styles.smallButton}
+                onPress={() => setChatTargetModalVisible(true)}>
+                <Text style={styles.smallButtonText}>Change</Text>
+              </TouchableOpacity>
+            </View>
+            <View style={styles.chatLog}>
+              {chatMessages.length === 0 ? (
+                <Text style={styles.helperText}>No messages yet</Text>
+              ) : (
+                chatMessages.slice(-25).map(msg => (
+                  <Text key={msg.id} style={styles.chatMessage}>
+                    [{msg.scope === 'private' ? 'Private' : 'Public'}] {msg.from}:{' '}
+                    {msg.text}
+                  </Text>
+                ))
+              )}
+            </View>
+            <View style={styles.chatInputRow}>
+              <TextInput
+                style={[styles.input, styles.chatInput]}
+                placeholder="Type message"
+                value={chatInput}
+                onChangeText={setChatInput}
+              />
+              <TouchableOpacity
+                style={styles.smallButton}
+                onPress={sendChatMessage}>
+                <Text style={styles.smallButtonText}>Send</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          <View style={styles.sectionContainer}>
+            <Text style={styles.sectionTitle}>Stage Routing</Text>
+            <Text style={styles.helperText}>{stageStatusLabel}</Text>
+            <View style={styles.toggleRow}>
+              <Text>Enable Stage Mode</Text>
+              <Switch
+                value={stageSettings.stageStatus}
+                onValueChange={value =>
+                  setStageSettings(prev => ({...prev, stageStatus: value}))
+                }
+              />
+            </View>
+            <View style={styles.toggleRow}>
+              <Text>Enable Back Stage</Text>
+              <Switch
+                value={stageSettings.backStageStatus}
+                onValueChange={value =>
+                  setStageSettings(prev => ({...prev, backStageStatus: value}))
+                }
+              />
+            </View>
+            <TextInput
+              style={styles.input}
+              placeholder="Stage Peer IDs (comma separated)"
+              value={stagePeersInput}
+              onChangeText={setStagePeersInput}
+            />
+            <TextInput
+              style={styles.input}
+              placeholder="Back Stage Peer IDs (comma separated)"
+              value={backStagePeersInput}
+              onChangeText={setBackStagePeersInput}
+            />
+            {isModeratorRole && (
+              <TouchableOpacity
+                style={styles.smallButton}
+                onPress={applyStageSettingsChanges}>
+                <Text style={styles.smallButtonText}>Apply Stage Settings</Text>
+              </TouchableOpacity>
+            )}
+            <View style={styles.inlineOptions}>
+              <TouchableOpacity
+                style={styles.smallButton}
+                onPress={() => toggleSelfStagePosition('stage')}>
+                <Text style={styles.smallButtonText}>Go On Stage</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.smallButton}
+                onPress={() => toggleSelfStagePosition('backstage')}>
+                <Text style={styles.smallButtonText}>Back Stage</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {isModeratorRole && (
+            <>
+              <View style={styles.sectionContainer}>
+                <Text style={styles.sectionTitle}>General Permissions</Text>
+                <View style={styles.toggleRow}>
+                  <Text>Allow Screen Share</Text>
+                  <Switch
+                    value={generalPermissions.allowScreenShare}
+                    onValueChange={value =>
+                      setGeneralPermissions(prev => ({
+                        ...prev,
+                        allowScreenShare: value,
+                      }))
+                    }
+                  />
+                </View>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Max Screen Shares"
+                  keyboardType="numeric"
+                  value={String(generalPermissions.noOfScreenShare)}
+                  onChangeText={value =>
+                    setGeneralPermissions(prev => ({
+                      ...prev,
+                      noOfScreenShare: Number(value) || 0,
+                    }))
+                  }
+                />
+                <TextInput
+                  style={styles.input}
+                  placeholder="Max Upgrade Requests"
+                  keyboardType="numeric"
+                  value={String(generalPermissions.noOfUpgradeRequests)}
+                  onChangeText={value =>
+                    setGeneralPermissions(prev => ({
+                      ...prev,
+                      noOfUpgradeRequests: Number(value) || 0,
+                    }))
+                  }
+                />
+                <TouchableOpacity
+                  style={styles.smallButton}
+                  onPress={applyGeneralPermissions}>
+                  <Text style={styles.smallButtonText}>Save General</Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.sectionContainer}>
+                <Text style={styles.sectionTitle}>Presenter Permissions</Text>
+                {Object.entries(presenterPermissions).map(([key, value]) => (
+                  <View style={styles.toggleRow} key={key}>
+                    <Text>{key}</Text>
+                    <Switch
+                      value={!!value}
+                      onValueChange={toggleValue =>
+                        setPresenterPermissions(prev => ({
+                          ...prev,
+                          [key]: toggleValue,
+                        }))
+                      }
+                    />
+                  </View>
+                ))}
+                <TouchableOpacity
+                  style={styles.smallButton}
+                  onPress={applyPresenterPermissions}>
+                  <Text style={styles.smallButtonText}>Save Presenter</Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.sectionContainer}>
+                <Text style={styles.sectionTitle}>Participant Permissions</Text>
+                {Object.entries(participantPermissionsState).map(
+                  ([key, value]) => (
+                    <View style={styles.toggleRow} key={key}>
+                      <Text>{key}</Text>
+                      <Switch
+                        value={!!value}
+                        onValueChange={toggleValue =>
+                          setParticipantPermissionsState(prev => ({
+                            ...prev,
+                            [key]: toggleValue,
+                          }))
+                        }
+                      />
+                    </View>
+                  ),
+                )}
+                <TouchableOpacity
+                  style={styles.smallButton}
+                  onPress={applyParticipantPermissions}>
+                  <Text style={styles.smallButtonText}>Save Participants</Text>
+                </TouchableOpacity>
+              </View>
+            </>
+          )}
+
+          <View style={styles.sectionContainer}>
+            <Text style={styles.sectionTitle}>Transcription & Live Streaming</Text>
+            <View style={styles.inlineOptions}>
+              <TouchableOpacity
+                style={styles.smallButton}
+                onPress={
+                  transcriptionActive
+                    ? stopTranscriptionSession
+                    : startTranscriptionSession
+                }>
+                <Text style={styles.smallButtonText}>
+                  {transcriptionActive ? 'Stop Transcription' : 'Start Transcription'}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.smallButton}
+                onPress={
+                  isLiveStreaming
+                    ? stopLiveStreamingSession
+                    : startLiveStreamingSession
+                }>
+                <Text style={styles.smallButtonText}>
+                  {isLiveStreaming ? 'Stop Stream' : 'Start Stream'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+            <TextInput
+              style={styles.input}
+              placeholder="RTMP URL"
+              value={liveStreamUrl}
+              onChangeText={setLiveStreamUrl}
+            />
+            <TextInput
+              style={styles.input}
+              placeholder="Stream Key"
+              value={liveStreamKey}
+              onChangeText={setLiveStreamKey}
+            />
+            {transcriptionEntries.length > 0 && (
+              <View style={styles.chatLog}>
+                {transcriptionEntries.slice(-10).map(entry => (
+                  <Text key={entry.id} style={styles.chatMessage}>
+                    {entry.speaker}: {entry.transcript}
+                  </Text>
+                ))}
+              </View>
+            )}
+          </View>
+
+          {roomLocked && (
+            <View style={styles.noticeCard}>
+              <Text style={styles.noticeTitle}>Room is currently locked</Text>
+            </View>
+          )}
+
+          {isModeratorRole && waitingPeersList.length > 0 && (
+            <View style={styles.sectionContainer}>
+              <Text style={styles.sectionTitle}>Waiting Room</Text>
+              {waitingPeersList.map(peer => (
+                <View key={peer.peerId} style={styles.noticeCard}>
+                  <Text style={styles.noticeTitle}>
+                    {peer.peerName || peer.peerId}
+                  </Text>
+                  <View style={styles.inlineOptions}>
+                    <TouchableOpacity
+                      style={styles.smallButton}
+                      onPress={() => admitWaitingPeer(peer.peerId)}>
+                      <Text style={styles.smallButtonText}>Admit</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.smallButton}
+                      onPress={() => denyWaitingPeer(peer.peerId)}>
+                      <Text style={styles.smallButtonText}>Reject</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              ))}
+            </View>
+          )}
+
+          {isModeratorRole && pendingRequests.length > 0 && (
+            <View style={styles.sectionContainer}>
+              <Text style={styles.sectionTitle}>Upgrade Requests</Text>
+              {pendingRequests.map(request => (
+                <View key={request.peerId} style={styles.noticeCard}>
+                  <Text style={styles.noticeTitle}>{request.message}</Text>
+                  <View style={styles.inlineOptions}>
+                    <TouchableOpacity
+                      style={styles.smallButton}
+                      onPress={() => handleUpgradeParticipantPress(request.peerId)}>
+                      <Text style={styles.smallButtonText}>Upgrade</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.smallButton}
+                      onPress={() => lowerParticipantHand(request.peerId)}>
+                      <Text style={styles.smallButtonText}>Dismiss</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              ))}
             </View>
           )}
 
@@ -985,6 +2139,43 @@ const App = () => {
             </View>
           </View>
         </Modal>
+
+        <Modal
+          visible={chatTargetModalVisible}
+          transparent={true}
+          animationType="fade"
+          onRequestClose={() => setChatTargetModalVisible(false)}>
+          <View style={styles.modalContainer}>
+            <View style={styles.modalContent}>
+              <Text style={styles.modalTitle}>Send chat to</Text>
+              {chatTargets.map(target => {
+                const displayName =
+                  target === 'everyone'
+                    ? 'Everyone'
+                    : peersRef.current.get(target)?.peerName || target;
+                return (
+                  <TouchableOpacity
+                    key={target}
+                    style={[
+                      styles.deviceOption,
+                      selectedChatReceiver === target && styles.selectedDevice,
+                    ]}
+                    onPress={() => {
+                      setSelectedChatReceiver(target);
+                      setChatTargetModalVisible(false);
+                    }}>
+                    <Text style={styles.deviceOptionText}>{displayName}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+              <TouchableOpacity
+                style={styles.closeModalButton}
+                onPress={() => setChatTargetModalVisible(false)}>
+                <Text style={styles.closeModalButtonText}>Close</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
       </ScrollView>
     </SafeAreaView>
   );
@@ -1065,6 +2256,12 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginBottom: 16,
   },
+  inlineOptions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
   mediaButton: {
     flex: 1,
     padding: 12,
@@ -1081,6 +2278,27 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
+  pillButton: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#cbd5f5',
+    marginRight: 8,
+    marginBottom: 8,
+    backgroundColor: '#fff',
+  },
+  pillButtonActive: {
+    backgroundColor: '#0d9488',
+    borderColor: '#0d9488',
+  },
+  pillButtonText: {
+    fontWeight: '600',
+    color: '#1e293b',
+  },
+  pillButtonTextActive: {
+    color: '#fff',
+  },
   sectionContainer: {
     marginBottom: 16,
   },
@@ -1089,6 +2307,44 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     marginBottom: 12,
     color: '#333',
+  },
+  helperText: {
+    color: '#64748b',
+    fontSize: 12,
+    marginTop: 4,
+  },
+  emojiRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginTop: 8,
+  },
+  emojiButton: {
+    padding: 8,
+    borderRadius: 8,
+    backgroundColor: '#e2e8f0',
+    marginRight: 6,
+    marginBottom: 6,
+  },
+  emojiText: {
+    fontSize: 18,
+  },
+  reactionList: {
+    marginTop: 4,
+  },
+  reactionText: {
+    fontSize: 12,
+    color: '#475569',
+  },
+  noticeCard: {
+    backgroundColor: '#eef2ff',
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 8,
+  },
+  noticeTitle: {
+    fontWeight: '600',
+    color: '#1e1b4b',
+    marginBottom: 6,
   },
   peerCard: {
     backgroundColor: 'white',
@@ -1160,6 +2416,53 @@ const styles = StyleSheet.create({
   },
   screenShareView: {
     height: 240,
+  },
+  toggleRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  smallButton: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: '#0f172a',
+    marginRight: 8,
+    marginBottom: 8,
+  },
+  smallButtonText: {
+    color: 'white',
+    fontWeight: '600',
+    fontSize: 12,
+  },
+  chatTargetRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  chatLog: {
+    minHeight: 80,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    borderRadius: 8,
+    padding: 8,
+    marginBottom: 8,
+    backgroundColor: '#f8fafc',
+  },
+  chatMessage: {
+    fontSize: 13,
+    color: '#0f172a',
+    marginBottom: 4,
+  },
+  chatInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  chatInput: {
+    flex: 1,
+    marginRight: 8,
   },
   noScreenShareContainer: {
     height: 240,
