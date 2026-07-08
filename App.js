@@ -1,4 +1,5 @@
 import React, {useState, useEffect, useRef} from 'react';
+import {ACCESS_KEY, SECRET_ACCESS_KEY} from '@env';
 import {
   SafeAreaView,
   StyleSheet,
@@ -188,15 +189,15 @@ const App = () => {
   const fetchSessionToken = async () => {
     try {
       console.log('Fetching session token', {roomId});
-      const data = {roomId};
-      const apiUrl =
-        Platform.OS === 'android'
-          ? 'http://10.0.2.2:5100/api/create-session-token'
-          : 'http://192.168.0.128:5100/api/create-session-token';
+      const apiUrl = 'https://test-api-v2.samvyo.com/api/siteSetting/sessionToken';
 
       console.log('Using API URL', {apiUrl});
 
-      const response = await axios.post(apiUrl, data);
+      const response = await axios.post(apiUrl, {
+        roomId,
+        accessKey: ACCESS_KEY,
+        secretAccessKey: SECRET_ACCESS_KEY,
+      });
       console.log('Session token response', {
         status: response.status,
         success: response.data.success,
