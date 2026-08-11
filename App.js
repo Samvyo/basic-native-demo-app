@@ -16,6 +16,7 @@ import {
   Switch,
 } from 'react-native';
 import axios from 'axios';
+import {ACCESS_KEY, SECRET_ACCESS_KEY} from '@env';
 import samvyo from './lib/rnsdk.cjs.js';
 import {RTCView} from 'react-native-webrtc';
 
@@ -184,19 +185,19 @@ const App = () => {
       console.log('Error getting devices', error);
     }
   };
-
+ 
   const fetchSessionToken = async () => {
     try {
       console.log('Fetching session token', {roomId});
-      const data = {roomId};
-      const apiUrl =
-        Platform.OS === 'android'
-          ? 'http://10.0.2.2:5100/api/create-session-token'
-          : 'http://192.168.0.128:5100/api/create-session-token';
+      const apiUrl = 'https://test-api-v2.samvyo.com/api/siteSetting/sessionToken';
 
       console.log('Using API URL', {apiUrl});
 
-      const response = await axios.post(apiUrl, data);
+      const response = await axios.post(apiUrl, {
+        roomId,
+        accessKey: ACCESS_KEY,
+        secretAccessKey: SECRET_ACCESS_KEY,
+      });
       console.log('Session token response', {
         status: response.status,
         success: response.data.success,
@@ -677,6 +678,7 @@ const App = () => {
   };
 
   const handleCustomMessageEvent = message => {
+    console.log('RAW customMessage received:', JSON.stringify(message));
     if (!message) {
       return;
     }
@@ -702,7 +704,8 @@ const App = () => {
       return;
     }
 
-    let payload = message.customData || message.data;
+    const hasCustomData = message.customData && Object.keys(message.customData).length > 0;
+    let payload = hasCustomData ? message.customData : message.data;
     if (typeof payload === 'string') {
       try {
         payload = JSON.parse(payload);
@@ -790,6 +793,8 @@ const App = () => {
     const displayName =
       peerName || peersRef.current.get(peerId)?.peerName || peerId;
 
+    console.log('handleHandRaiseEvent', {peerId, isRaised, upgradeRequest, isModeratorRole: isModeratorRoleRef.current});
+
     setHandRaiseEvents(prev => {
       const filtered = prev.filter(item => item.peerId !== peerId);
       if (!isRaised) {
@@ -808,6 +813,15 @@ const App = () => {
 
     if (peerId === sdkInstanceRef.current?.data?.inputParams?.peerId) {
       setHandRaised(!!isRaised);
+    }
+
+    // When a moderator sends an upgrade invite (upgradeRequest: true), show popup to participant
+    if (upgradeRequest && isRaised && !isModeratorRoleRef.current) {
+      handleUpgradeRequestReceived({
+        peerId,
+        moderator: peerId,
+        message: `${displayName} wants to upgrade you to presenter`,
+      });
     }
   };
 
