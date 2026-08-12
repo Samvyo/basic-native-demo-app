@@ -16,7 +16,6 @@ import {
   Switch,
 } from 'react-native';
 import axios from 'axios';
-import {ACCESS_KEY, SECRET_ACCESS_KEY} from '@env';
 import samvyo from './lib/rnsdk.cjs.js';
 import {RTCView} from 'react-native-webrtc';
 
@@ -189,15 +188,15 @@ const App = () => {
   const fetchSessionToken = async () => {
     try {
       console.log('Fetching session token', {roomId});
-      const apiUrl = 'https://test-api-v2.samvyo.com/api/siteSetting/sessionToken';
+      const data = {roomId};
+      const apiUrl =
+        Platform.OS === 'android'
+          ? 'http://10.0.2.2:5100/api/create-session-token'
+          : 'http://192.168.0.128:5100/api/create-session-token';
 
       console.log('Using API URL', {apiUrl});
 
-      const response = await axios.post(apiUrl, {
-        roomId,
-        accessKey: ACCESS_KEY,
-        secretAccessKey: SECRET_ACCESS_KEY,
-      });
+      const response = await axios.post(apiUrl, data);
       console.log('Session token response', {
         status: response.status,
         success: response.data.success,
