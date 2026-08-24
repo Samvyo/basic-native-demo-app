@@ -87,6 +87,18 @@ const App = () => {
   const [waitingPeers, setWaitingPeers] = useState([]);
   const [pendingUpgradeRequests, setPendingUpgradeRequests] = useState([]);
 
+  // ---- AI Agent (SDK parity, see AI_AGENT_INTEGRATION_PLAN.md) ----
+  const [aiRows, setAiRows] = useState([]); // [{peerId, displayName, mediaTag, kind, selected, consent}]
+  const [aiTicked, setAiTicked] = useState(new Set()); // "peerId:mediaTag" keys
+  const [aiRowsLoading, setAiRowsLoading] = useState(false);
+  const [pendingAiConsent, setPendingAiConsent] = useState(null); // {streams, requestedBy, expiresInMs} | null
+  const [aiConsentChecked, setAiConsentChecked] = useState({}); // {mediaTag: boolean}
+  const [aiConsentError, setAiConsentError] = useState(null);
+  const [myAiStreams, setMyAiStreams] = useState([]); // [{mediaTag, state, canGrant, canRevoke, cooldownUntilMs}]
+  const [aiConsentRequiredForRoom, setAiConsentRequiredForRoom] = useState(true);
+  const [myAiConsentError, setMyAiConsentError] = useState(null);
+  const [aiObservations, setAiObservations] = useState([]);
+
   const inputParams = {
     videoResolution: 'hd',
     produce: true,
@@ -330,6 +342,15 @@ const App = () => {
       setPendingUpgradeRequests([]);
       setWaitingPeers([]);
       setRoomLocked(false);
+      setAiRows([]);
+      setAiTicked(new Set());
+      setPendingAiConsent(null);
+      setAiConsentChecked({});
+      setAiConsentError(null);
+      setMyAiStreams([]);
+      setAiConsentRequiredForRoom(true);
+      setMyAiConsentError(null);
+      setAiObservations([]);
 
       // Set up event listeners
       console.log('Setting up event listeners');
@@ -473,6 +494,75 @@ const App = () => {
       sdkInstanceRef.current.on('downgraded', () => {
         setCallStatus('You are now a viewer');
       });
+
+      // ---- Resilience/observability (SDK parity) ----
+      // The SDK already handles reconnection internally with zero app
+      // involvement; these exist purely so a real disconnect/expiry is
+      // visible during testing instead of happening invisibly.
+      sdkInstanceRef.current.on('terminalClose', ({code, category, reason}) => {
+        console.log('Terminal close', {code, category, reason});
+        Alert.alert('Connection closed', category || reason || 'Unknown reason');
+      });
+      sdkInstanceRef.current.on('sessionExpired', ({code, reason}) => {
+        console.log('Session expired', {code, reason});
+        Alert.alert('Session expired', 'Please rejoin the room');
+      });
+
+      // ---- AI Agent (SDK parity) ----
+      sdkInstanceRef.current.on('aiAgentStarted', ({attached, requested, wholeRoom, targets}) => {
+        console.log('AI agent started', {attached, requested, wholeRoom, targets});
+      });
+      sdkInstanceRef.current.on('aiAgentError', ({text, reason, retracted}) => {
+        console.log('AI agent error', {text, reason, retracted});
+        Alert.alert('AI Agent', text || 'Something went wrong with the AI agent');
+      });
+      sdkInstanceRef.current.on('aiConsentRequest', request => {
+        console.log('AI consent request', request);
+        setPendingAiConsent(request);
+        setAiConsentChecked({}); // never carry ticks over from a previous request
+        setAiConsentError(null);
+      });
+      sdkInstanceRef.current.on('aiConsentExpired', ({pending}) => {
+        console.log('AI consent expired', {pending});
+        // Render exactly what the SDK says is still open — never run our
+        // own timer to guess this.
+        setPendingAiConsent(pending);
+        if (!pending) {
+          setAiConsentChecked({});
+          setAiConsentError(null);
+        }
+      });
+      sdkInstanceRef.current.on('aiConsentNotApplied', notApplied => {
+        console.log('AI consent not applied', notApplied);
+        setAiConsentError('That request has already closed, so your answer was not applied.');
+      });
+      sdkInstanceRef.current.on('aiMyConsent', ({streams, consentRequired}) => {
+        console.log('AI my consent updated', {streams, consentRequired});
+        setMyAiStreams(streams || []);
+        setAiConsentRequiredForRoom(consentRequired !== false);
+      });
+      sdkInstanceRef.current.on('aiSelectableStreams', rows => {
+        console.log('AI selectable streams updated', rows);
+        setAiRows(rows || []);
+        setAiTicked(
+          new Set(
+            (rows || [])
+              .filter(r => r.selected)
+              .map(r => `${r.peerId}:${r.mediaTag}`),
+          ),
+        );
+      });
+      sdkInstanceRef.current.on('aiAnalysis', observation => {
+        setAiObservations(prev => [...prev.slice(-49), observation]);
+      });
+
+      // Seed AI state from the SDK's own getters/requests right after join —
+      // a panel that mounts after something already happened must not show
+      // blank/stale data until the next live event arrives.
+      loadMyAiConsent();
+      if (isModeratorRole) {
+        loadAiSelectableStreams();
+      }
     } catch (err) {
       console.log('Join room error', err);
       setCallStatus('Failed to join room.');
@@ -676,6 +766,145 @@ const App = () => {
     });
   };
 
+  // ---- Bulk moderator mute (SDK parity) ----
+  const muteAllParticipants = () => {
+    if (!sdkInstanceRef.current) {
+      return;
+    }
+    sdkInstanceRef.current.muteAllParticipants();
+    Alert.alert('Mute All', 'Muted all participants');
+  };
+
+  // ---- AI Agent (SDK parity) ----
+  //
+  // Four independent pieces:
+  //   1. Stream picker (moderator only) — aiRows/aiTicked
+  //   2. Consent prompt (whoever was selected) — pendingAiConsent
+  //   3. My streams / self-consent (everyone) — myAiStreams
+  //   4. Observations panel (everyone) — aiObservations
+
+  // Fetches the moderator's picker rows fresh from the server — never
+  // derived locally, since the app has no reliable way to know this itself.
+  const loadAiSelectableStreams = async () => {
+    if (!sdkInstanceRef.current) {
+      return;
+    }
+    setAiRowsLoading(true);
+    try {
+      const rows = await sdkInstanceRef.current.requestAiSelectableStreams();
+      setAiRows(rows || []);
+      setAiTicked(
+        new Set(
+          (rows || [])
+            .filter(r => r.selected)
+            .map(r => `${r.peerId}:${r.mediaTag}`),
+        ),
+      );
+    } finally {
+      setAiRowsLoading(false);
+    }
+  };
+
+  const toggleAiRow = (peerId, mediaTag) => {
+    const key = `${peerId}:${mediaTag}`;
+    setAiTicked(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  };
+
+  // Applies the picker's CURRENT full tick-state. An empty selection means
+  // "stop analysing", sent as stopAiAgent() — NOT startAiAgent({targets: []}),
+  // which the server deliberately refuses (an explicit empty selection must
+  // not silently widen to the whole room).
+  const applyAiSelection = () => {
+    if (!sdkInstanceRef.current) {
+      return;
+    }
+    if (aiTicked.size === 0) {
+      sdkInstanceRef.current.stopAiAgent();
+      return;
+    }
+    const byPeer = {};
+    aiTicked.forEach(key => {
+      const [peerId, mediaTag] = key.split(':');
+      (byPeer[peerId] ??= []).push(mediaTag);
+    });
+    const targets = Object.entries(byPeer).map(([peerId, mediaTags]) => ({
+      peerId,
+      mediaTags,
+    }));
+    sdkInstanceRef.current.startAiAgent({targets});
+  };
+
+  // Sends this device's answer to the currently pending consent request.
+  // On a failed send, the pending request is left untouched — closing the
+  // dialog anyway would silently consume the user's decision locally while
+  // the real request keeps running server-side toward a timeout.
+  const respondToAiConsent = grants => {
+    if (!sdkInstanceRef.current) {
+      return;
+    }
+    const result = sdkInstanceRef.current.respondToAiConsent(grants);
+    if (!result.success) {
+      setAiConsentError(
+        result.reason === 'not_connected'
+          ? 'You appear to be offline — your answer was not sent. Try again.'
+          : 'Your answer could not be sent. Try again.',
+      );
+      return;
+    }
+    setPendingAiConsent(null);
+    setAiConsentChecked({});
+    setAiConsentError(null);
+  };
+
+  const loadMyAiConsent = async () => {
+    if (!sdkInstanceRef.current) {
+      return;
+    }
+    const view = await sdkInstanceRef.current.requestMyAiConsent();
+    setMyAiStreams(view.streams || []);
+    setAiConsentRequiredForRoom(view.consentRequired !== false);
+  };
+
+  // Grant/revoke are fire-and-forget — nothing updates optimistically here.
+  // The next aiMyConsent push is what actually moves a row; a call that
+  // failed to send leaves the UI exactly where it was, which is the correct
+  // failure mode.
+  const grantAiStream = mediaTag => {
+    if (!sdkInstanceRef.current) {
+      return;
+    }
+    const result = sdkInstanceRef.current.grantAiConsent([mediaTag]);
+    if (!result.success) {
+      setMyAiConsentError(
+        result.reason === 'not_connected'
+          ? 'You appear to be offline — that was not sent.'
+          : 'That could not be sent. Try again.',
+      );
+    }
+  };
+
+  const revokeAiStream = mediaTag => {
+    if (!sdkInstanceRef.current) {
+      return;
+    }
+    const result = sdkInstanceRef.current.revokeAiConsent([mediaTag]);
+    if (!result.success) {
+      setMyAiConsentError(
+        result.reason === 'not_connected'
+          ? 'You appear to be offline — that was not sent.'
+          : 'That could not be sent. Try again.',
+      );
+    }
+  };
+
   const handleCustomMessageEvent = message => {
     console.log('RAW customMessage received:', JSON.stringify(message));
     if (!message) {
@@ -683,10 +912,14 @@ const App = () => {
     }
 
     if (message.type === 'chat') {
+      // The server echoes our own sendCustomMessage back to us, and
+      // sendChatMessage already added this message optimistically the
+      // moment we sent it — without this guard, the echo adds it again.
+      if (message.from === 'me') {
+        return;
+      }
       const displayName =
-        message.from === 'me'
-          ? 'You'
-          : peersRef.current.get(message.from)?.peerName || message.from;
+        peersRef.current.get(message.from)?.peerName || message.from;
       setChatMessages(prev => {
         const next = [
           ...prev,
@@ -718,10 +951,13 @@ const App = () => {
     }
 
     if (payload.type === 'emoji-reaction') {
+      // Same reasoning as chat, above — sendReaction already added this
+      // reaction optimistically.
+      if (message.from === 'me') {
+        return;
+      }
       const displayName =
-        message.from === 'me'
-          ? 'You'
-          : peersRef.current.get(message.from)?.peerName || message.from;
+        peersRef.current.get(message.from)?.peerName || message.from;
       setRecentReactions(prev => {
         const next = [
           ...prev.slice(-5),
@@ -1808,6 +2044,117 @@ const App = () => {
           </View>
 
           <View style={styles.sectionContainer}>
+            <Text style={styles.sectionTitle}>AI Assistant</Text>
+
+            {isModeratorRole && (
+              <View style={styles.aiSubSection}>
+                <View style={styles.chatTargetRow}>
+                  <Text style={styles.helperText}>Select streams to analyse</Text>
+                  <TouchableOpacity
+                    style={styles.smallButton}
+                    disabled={aiRowsLoading}
+                    onPress={loadAiSelectableStreams}>
+                    <Text style={styles.smallButtonText}>
+                      {aiRowsLoading ? 'Loading...' : 'Refresh'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+                {aiRows.length === 0 ? (
+                  <Text style={styles.helperText}>
+                    No publishing streams available
+                  </Text>
+                ) : (
+                  aiRows.map(row => {
+                    const key = `${row.peerId}:${row.mediaTag}`;
+                    return (
+                      <View key={key} style={styles.toggleRow}>
+                        <Text style={styles.helperText}>
+                          {row.displayName || row.peerId} — {row.mediaTag}
+                          {row.consent ? ` (${row.consent})` : ''}
+                        </Text>
+                        <Switch
+                          value={aiTicked.has(key)}
+                          onValueChange={() =>
+                            toggleAiRow(row.peerId, row.mediaTag)
+                          }
+                        />
+                      </View>
+                    );
+                  })
+                )}
+                <TouchableOpacity
+                  style={styles.smallButton}
+                  onPress={applyAiSelection}>
+                  <Text style={styles.smallButtonText}>
+                    {aiTicked.size === 0 ? 'Stop AI Agent' : 'Apply Selection'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {myAiStreams.length > 0 && (
+              <View style={styles.aiSubSection}>
+                <Text style={styles.helperText}>Your streams</Text>
+                {myAiStreams.map(s => (
+                  <View key={s.mediaTag} style={styles.toggleRow}>
+                    <Text style={styles.helperText}>
+                      {s.mediaTag} — {s.state ?? 'not asked yet'}
+                    </Text>
+                    <View style={styles.inlineOptions}>
+                      {s.canGrant && (
+                        <TouchableOpacity
+                          style={styles.smallButton}
+                          disabled={s.cooldownUntilMs > Date.now()}
+                          onPress={() => grantAiStream(s.mediaTag)}>
+                          <Text style={styles.smallButtonText}>Allow</Text>
+                        </TouchableOpacity>
+                      )}
+                      {s.canRevoke && (
+                        <TouchableOpacity
+                          style={styles.smallButton}
+                          onPress={() => revokeAiStream(s.mediaTag)}>
+                          <Text style={styles.smallButtonText}>Stop</Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                  </View>
+                ))}
+                {myAiConsentError && (
+                  <Text style={styles.errorText}>{myAiConsentError}</Text>
+                )}
+              </View>
+            )}
+            {myAiStreams.length === 0 && !aiConsentRequiredForRoom && (
+              <Text style={styles.helperText}>
+                This room is configured for automated analysis.
+              </Text>
+            )}
+
+            <View style={styles.aiSubSection}>
+              <Text style={styles.helperText}>Observations</Text>
+              <View style={styles.chatLog}>
+                {aiObservations.length === 0 ? (
+                  <Text style={styles.helperText}>No observations yet</Text>
+                ) : (
+                  aiObservations
+                    .slice()
+                    .reverse()
+                    .map((obs, index) => (
+                      <Text
+                        key={index}
+                        style={[
+                          styles.chatMessage,
+                          obs.notable && styles.aiNotableObservation,
+                        ]}>
+                        {obs.summary ?? JSON.stringify(obs)}
+                      </Text>
+                    ))
+                )}
+              </View>
+            </View>
+          </View>
+
+          <View style={styles.sectionContainer}>
             <Text style={styles.sectionTitle}>Stage Routing</Text>
             <Text style={styles.helperText}>{stageStatusLabel}</Text>
             <View style={styles.toggleRow}>
@@ -1863,6 +2210,15 @@ const App = () => {
 
           {isModeratorRole && (
             <>
+              <View style={styles.sectionContainer}>
+                <Text style={styles.sectionTitle}>Moderator Actions</Text>
+                <TouchableOpacity
+                  style={styles.smallButton}
+                  onPress={muteAllParticipants}>
+                  <Text style={styles.smallButtonText}>Mute All</Text>
+                </TouchableOpacity>
+              </View>
+
               <View style={styles.sectionContainer}>
                 <Text style={styles.sectionTitle}>General Permissions</Text>
                 <View style={styles.toggleRow}>
@@ -2186,6 +2542,66 @@ const App = () => {
                 onPress={() => setChatTargetModalVisible(false)}>
                 <Text style={styles.closeModalButtonText}>Close</Text>
               </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
+
+        {/* AI consent prompt — state-driven (visible={!!pendingAiConsent}),
+            NOT an imperative popup. A consent request can expire or narrow
+            while on screen (see the aiConsentExpired listener above), and
+            only a modal driven by state can update/dismiss itself when
+            that happens; a one-shot dialog cannot. */}
+        <Modal
+          visible={!!pendingAiConsent}
+          transparent={true}
+          animationType="fade"
+          onRequestClose={() => {}}>
+          <View style={styles.modalContainer}>
+            <View style={styles.modalContent}>
+              <Text style={styles.modalTitle}>Allow the AI assistant?</Text>
+              <Text style={styles.helperText}>
+                A moderator has asked the AI assistant to analyse the
+                following. Choose what you are comfortable sharing — nothing
+                is analysed unless you allow it
+                {pendingAiConsent?.expiresInMs
+                  ? `, and this request expires in about ${Math.round(
+                      pendingAiConsent.expiresInMs / 1000,
+                    )} seconds`
+                  : ''}
+                .
+              </Text>
+              {pendingAiConsent?.streams.map(stream => (
+                <View key={stream.mediaTag} style={styles.toggleRow}>
+                  <Text>{stream.mediaTag}</Text>
+                  {/* Defaults to OFF — consent is opt-in. A pre-checked box
+                      isn't consent, and tapping "Allow" to dismiss a dialog
+                      you didn't fully read must not thereby grant it. */}
+                  <Switch
+                    value={!!aiConsentChecked[stream.mediaTag]}
+                    onValueChange={value =>
+                      setAiConsentChecked(prev => ({
+                        ...prev,
+                        [stream.mediaTag]: value,
+                      }))
+                    }
+                  />
+                </View>
+              ))}
+              {aiConsentError && (
+                <Text style={styles.errorText}>{aiConsentError}</Text>
+              )}
+              <View style={styles.inlineOptions}>
+                <TouchableOpacity
+                  style={styles.smallButton}
+                  onPress={() => respondToAiConsent(false)}>
+                  <Text style={styles.smallButtonText}>Decline</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.smallButton}
+                  onPress={() => respondToAiConsent(aiConsentChecked)}>
+                  <Text style={styles.smallButtonText}>Allow selected</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           </View>
         </Modal>
@@ -2553,6 +2969,17 @@ const styles = StyleSheet.create({
   recordingText: {
     color: 'white',
     fontWeight: 'bold',
+  },
+  aiSubSection: {
+    marginBottom: 12,
+  },
+  errorText: {
+    color: '#dc2626',
+    fontSize: 12,
+    marginTop: 4,
+  },
+  aiNotableObservation: {
+    backgroundColor: '#fff3cd',
   },
 });
 
