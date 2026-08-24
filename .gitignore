@@ -56,6 +56,12 @@ yarn-error.log
 # Bundle artifact
 *.jsbundle
 
+# Vendored SDK build output — manually copied from react-native-sdk's
+# dist/, not built by anything in this repo. Copy rnsdk.cjs.js/rnsdk.esm.js
+# from react-native-sdk/dist/ into lib/ before running this app.
+lib/rnsdk.cjs.js
+lib/rnsdk.esm.js
+
 # Ruby / CocoaPods
 **/Pods/
 /vendor/bundle/
