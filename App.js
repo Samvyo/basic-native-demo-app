@@ -1770,7 +1770,21 @@ const App = () => {
         console.log('Screen sharing disabled');
         setIsScreenSharing(false);
       } else {
-        await sdkInstanceRef.current.enableShare();
+        // enableShare() answers with a result: a refused share (for example
+        // the host's screen-share limit, code RWID004) is `success: false`.
+        const result = await sdkInstanceRef.current.enableShare();
+        if (result && result.success === false) {
+          console.log('Screen sharing not started', {
+            code: result.code,
+            reason: result.reason,
+            limit: result.limit,
+          });
+          Alert.alert(
+            'Screen share',
+            result.text || 'Screen sharing could not be started.',
+          );
+          return;
+        }
         console.log('Screen sharing enabled');
         setIsScreenSharing(true);
       }
