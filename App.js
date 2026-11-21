@@ -289,21 +289,31 @@ const App = () => {
         Alert.alert('Processing Error', 'An error occurred during processing');
       });
 
-      sdkInstance.on('recordingStarted', ({ peerId, startTime }) => {
-        console.log(`Recording has been started in this room at ${startTime}`);
-        Alert.alert('Recording Started', `Recording has been started on the room at: ${new Date(startTime).toLocaleString()}`);
-        setIsRecording(true);
+      // recordingStarted / recordingEnded are handled in startCall() — they
+      // used to be registered here too, which showed every alert twice.
+
+      // The SDK's error payloads vary: {code, text} or {type, message}.
+      sdkInstance.on('error', (err = {}) => {
+        const what = err.text || err.message || 'Unknown error';
+        const tag = err.code || err.type;
+        console.log(`SDK error: ${what}${tag ? ` (${tag})` : ''}`);
+        Alert.alert('Error', `${what}${tag ? ` (${tag})` : ''}`);
       });
 
-      sdkInstance.on('recordingEnded', () => {
-        console.log(`Recording has been ended on this room`);
-        Alert.alert('Recording Ended', `Recording has been ended on the room`);
-        setIsRecording(false);
-      });
-
-      sdkInstance.on('error', ({code, text}) => {
-        console.log(`SDK error: ${text} (Code: ${code})`);
-        Alert.alert('Error', `${text} (Code: ${code})`);
+      // Recording AND live-stream refusals arrive here (type 'rtmpStream'
+      // for live streams), e.g. recording disabled for the org, or no
+      // live-stream destination configured for the room.
+      sdkInstance.on('recordingError', ({title, text, type, reason} = {}) => {
+        console.log('Recording error', {title, text, type, reason});
+        if (type === 'rtmpStream') {
+          setIsLiveStreaming(false);
+        } else {
+          setIsRecording(false);
+        }
+        Alert.alert(
+          title || (type === 'rtmpStream' ? 'Live streaming' : 'Recording'),
+          text || reason || 'The server refused the request',
+        );
       });
     } catch (error) {
       console.error('Error initialising room:', error);
@@ -403,10 +413,23 @@ const App = () => {
         setIsRecording(true);
       });
 
-      sdkInstanceRef.current.on('recordingEnded', () => {
-        console.log(`Recording has been ended on this room at`);
-        alert(`Recording has been ended on the room at`);
+      sdkInstanceRef.current.on('recordingEnded', ({reason, savedUntil} = {}) => {
+        console.log('Recording ended', {reason, savedUntil});
         setIsRecording(false);
+        if (reason === 'server_lost') {
+          // The recording server died mid-recording. What was captured up to
+          // savedUntil is kept; the SDK does not retry, so offer a restart.
+          Alert.alert(
+            'Recording interrupted',
+            `The recording server was lost. Saved up to ${
+              savedUntil ? new Date(savedUntil).toLocaleTimeString() : 'an unknown time'
+            }.` + (isModeratorRoleRef.current ? ' You can start recording again.' : ''),
+          );
+        } else if (reason) {
+          Alert.alert('Recording ended', `Stopped by the server (${reason})`);
+        } else {
+          Alert.alert('Recording ended', 'Recording has been ended on the room');
+        }
       });
 
       sdkInstanceRef.current.on('micStart', ({peerId, audioTrack, type}) => {
@@ -462,9 +485,16 @@ const App = () => {
         setIsLiveStreaming(true);
         Alert.alert('Live Streaming', 'Live streaming has started');
       });
-      sdkInstanceRef.current.on('liveStreamingEnded', () => {
+      sdkInstanceRef.current.on('liveStreamingEnded', ({reason} = {}) => {
         setIsLiveStreaming(false);
-        Alert.alert('Live Streaming', 'Live streaming has ended');
+        Alert.alert(
+          'Live Streaming',
+          reason === 'server_lost'
+            ? 'Live streaming ended: the recording server carrying it was lost'
+            : reason
+            ? `Live streaming ended by the server (${reason})`
+            : 'Live streaming has ended',
+        );
       });
       sdkInstanceRef.current.on('transcription', handleTranscriptionEvent);
       sdkInstanceRef.current.on('micForcedOff', ({message}) => {
@@ -1442,19 +1472,32 @@ const App = () => {
   };
 
   const startLiveStreamingSession = async () => {
-    if (!sdkInstanceRef.current || !liveStreamUrl.trim() || !liveStreamKey.trim()) {
-      Alert.alert('Live Streaming', 'Please enter stream URL and key');
+    if (!sdkInstanceRef.current) {
+      return;
+    }
+    const url = liveStreamUrl.trim();
+    const key = liveStreamKey.trim();
+    // Both empty → stream to the room's destination set in the dashboard
+    // (resolved by the server; the key never reaches the device). One of the
+    // two alone is a mistake.
+    if (!!url !== !!key) {
+      Alert.alert(
+        'Live Streaming',
+        'Enter both the RTMP URL and the key, or leave both empty to use the room’s destination',
+      );
       return;
     }
     try {
-      const response = await sdkInstanceRef.current.startLiveStreaming({
-        streamUrl: liveStreamUrl.trim(),
-        streamKey: liveStreamKey.trim(),
-      });
+      const response = await sdkInstanceRef.current.startLiveStreaming(
+        url ? {streamUrl: url, streamKey: key} : undefined,
+      );
       if (response?.success === false) {
         throw new Error(response?.text || response?.reason);
       }
-      setIsLiveStreaming(true);
+      // Not set optimistically: the server can still refuse (e.g. "no
+      // live-stream destination configured", sent as recordingError). The
+      // liveStreamingStarted event flips isLiveStreaming.
+      setCallStatus('Live stream requested…');
     } catch (error) {
       Alert.alert('Live Streaming', error?.message || 'Unable to start streaming');
     }
