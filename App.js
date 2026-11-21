@@ -21,6 +21,11 @@ import {RTCView} from 'react-native-webrtc';
 
 const App = () => {
   const [callStatus, setCallStatus] = useState('');
+  // EVENT rooms: { count, participantTotal } from the SDK's viewerCount event.
+  const [viewerInfo, setViewerInfo] = useState(null);
+  // Lifecycle listeners (join refusal, room close, …) are attached once per
+  // SDK instance, BEFORE joinRoom, so events fired during the join are seen.
+  const lifecycleAttachedRef = useRef(null);
   const [roomId, setRoomId] = useState('');
   const [peerName, setPeerName] = useState('peer-1');
   const sdkInstanceRef = useRef(null);
@@ -250,6 +255,9 @@ const App = () => {
       sessionToken,
       roomId,
       peerName,
+      // Rides the WebSocket URL so the router can send an EVENT viewer to a
+      // viewer-home node. Same role we pass to joinRoom().
+      participantType: resolvedPeerType,
     };
     try {
       sdkInstance = await samvyo.RNSdk.init(initialParams);
@@ -330,6 +338,7 @@ const App = () => {
 
       console.log('Joining room with SDK');
       console.log('SDK instance', sdkInstanceRef.current);
+      attachCallLifecycleListeners(sdkInstanceRef.current);
       await sdkInstanceRef.current.joinRoom(roomParams);
 
       console.log('Room joined successfully');
@@ -499,12 +508,22 @@ const App = () => {
       // The SDK already handles reconnection internally with zero app
       // involvement; these exist purely so a real disconnect/expiry is
       // visible during testing instead of happening invisibly.
+      // terminalClose / sessionExpired: the SDK will not reconnect, so the
+      // call is over — tear the UI down (same as the native Android demo).
       sdkInstanceRef.current.on('terminalClose', ({code, category, reason}) => {
         console.log('Terminal close', {code, category, reason});
-        Alert.alert('Connection closed', category || reason || 'Unknown reason');
+        const why =
+          category === 'insufficient_credit'
+            ? 'The organisation has run out of credit.'
+            : category === 'p2p_minutes_exhausted'
+            ? 'The monthly P2P minutes are used up.'
+            : category || reason || 'Unknown reason';
+        resetCallUi(`Connection closed (${code}): ${why}`);
+        Alert.alert('Connection closed', `${why} (code ${code})`);
       });
       sdkInstanceRef.current.on('sessionExpired', ({code, reason}) => {
         console.log('Session expired', {code, reason});
+        resetCallUi('Session expired');
         Alert.alert('Session expired', 'Please rejoin the room');
       });
 
@@ -576,32 +595,9 @@ const App = () => {
       if (sdkInstanceRef.current) {
         const response = await sdkInstanceRef.current.leaveRoom();
         console.log('Left room successfully', response);
-        setCallStatus('Left room successfully!');
         Alert.alert('Success', 'Successfully left the room!');
-
-        setPeers(new Map());
-        setScreenShares(new Map());
-        setHandRaised(false);
-        setHandRaiseEvents([]);
-        setRecentReactions([]);
-        setChatMessages([]);
-        setTranscriptionEntries([]);
-        setPendingUpgradeRequests([]);
-        setWaitingPeers([]);
-        setIsLiveStreaming(false);
-        setRoomLocked(false);
-        setStageSettings({
-          stageStatus: false,
-          stagePeers: [],
-          backStageStatus: false,
-          backStagePeers: [],
-        });
-        setStagePeersInput('');
-        setBackStagePeersInput('');
-        sdkInstanceRef.current = null;
-
+        resetCallUi('Left room successfully!');
         showThankYouMessage();
-        setIsRoomInitialized(false);
       } else {
         console.log('No active SDK instance to leave room');
       }
@@ -610,6 +606,134 @@ const App = () => {
       setCallStatus('Failed to leave room.');
       Alert.alert('Error', err.message || 'Failed to leave');
     }
+  };
+
+  // One place that tears the call UI down: leave, moderator close, a final
+  // join refusal, terminalClose and sessionExpired all end here.
+  const resetCallUi = status => {
+    setPeers(new Map());
+    setScreenShares(new Map());
+    setHandRaised(false);
+    setHandRaiseEvents([]);
+    setRecentReactions([]);
+    setChatMessages([]);
+    setTranscriptionEntries([]);
+    setPendingUpgradeRequests([]);
+    setWaitingPeers([]);
+    setIsLiveStreaming(false);
+    setIsRecording(false);
+    setRoomLocked(false);
+    setViewerInfo(null);
+    setStageSettings({
+      stageStatus: false,
+      stagePeers: [],
+      backStageStatus: false,
+      backStagePeers: [],
+    });
+    setStagePeersInput('');
+    setBackStagePeersInput('');
+    sdkInstanceRef.current = null;
+    lifecycleAttachedRef.current = null;
+    setIsRoomInitialized(false);
+    if (status) {
+      setCallStatus(status);
+    }
+  };
+
+  const JOIN_FAILED_TEXT = {
+    ROOM_PASSWORD_REQUIRED: 'This room needs a password.',
+    ROOM_ORG_MISMATCH: 'This room belongs to another organisation.',
+    CAMERA_NOT_REGISTERED: 'This camera is not registered.',
+    ROLE_NOT_GRANTED: 'Your session token does not allow this role.',
+  };
+
+  // Attached BEFORE joinRoom(): joinRejected / joinFailed fire during the join
+  // itself, so a listener added after `await joinRoom()` would miss them.
+  const attachCallLifecycleListeners = sdk => {
+    if (!sdk || lifecycleAttachedRef.current === sdk) {
+      return;
+    }
+    lifecycleAttachedRef.current = sdk;
+
+    sdk.on('joinRejected', ({reason, code, retryAfterMs}) => {
+      console.log('Join rejected', {reason, code, retryAfterMs});
+      setCallStatus(`Join refused: ${code || reason}`);
+    });
+    sdk.on('joinRetryScheduled', ({reason, attempt, maxRetries, delayMs}) => {
+      setCallStatus(
+        `Join refused (${reason}) — retry ${attempt}/${maxRetries} in ${Math.round(
+          (delayMs || 0) / 1000,
+        )}s`,
+      );
+    });
+    sdk.on('joinFailed', ({reason, code, retriable, attempts, message}) => {
+      console.log('Join failed', {reason, code, retriable, attempts, message});
+      const why =
+        JOIN_FAILED_TEXT[code] || message || `${reason}${code ? ` (${code})` : ''}`;
+      resetCallUi(`Could not join: ${why}`);
+      Alert.alert(
+        'Could not join',
+        retriable === false
+          ? why
+          : `${why}\nGave up after ${attempts} attempt(s).`,
+      );
+    });
+    sdk.on('actionRefused', ({for: action, code, message}) => {
+      console.log('Action refused', {action, code, message});
+      Alert.alert('Not allowed', message || `"${action || 'That action'}" was refused (${code})`);
+    });
+    sdk.on('roomLeft', ({roomId: leftRoomId} = {}) => {
+      console.log('roomLeft', {roomId: leftRoomId});
+    });
+    sdk.on('roomClosed', ({reason, category} = {}) => {
+      console.log('roomClosed', {reason, category});
+      resetCallUi('The room was closed');
+      Alert.alert(
+        'Room closed',
+        reason || category ? `The room was closed (${reason || category})` : 'The room was closed',
+      );
+    });
+    sdk.on('viewerCount', ({count, participantTotal}) => {
+      setViewerInfo({count, participantTotal});
+    });
+    sdk.on('peerConnectionFailed', ({peerId, recovering}) => {
+      setCallStatus(
+        recovering === true
+          ? `Connection to ${peerId} lost — rebuilding it…`
+          : recovering === false
+          ? `Connection to ${peerId} lost — waiting for them to rebuild it…`
+          : `Connection to ${peerId} failed — trying to recover…`,
+      );
+    });
+    sdk.on('roomModeChanging', ({from, to}) => {
+      setCallStatus(`Switching call from ${from} to ${to}…`);
+    });
+    sdk.on('roomModeChanged', ({from, to}) => {
+      setCallStatus(`Call is now ${to} (was ${from})`);
+    });
+  };
+
+  // Moderator only: end the call for everyone. The SDK answers with
+  // `roomClosed` (not `roomLeft`), which tears our UI down above.
+  const closeRoomForAll = () => {
+    if (!sdkInstanceRef.current) {
+      return;
+    }
+    Alert.alert('End call for everyone?', 'Every participant will be removed.', [
+      {text: 'Cancel', style: 'cancel'},
+      {
+        text: 'End for all',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await sdkInstanceRef.current?.closeRoom();
+          } catch (err) {
+            console.log('Close room error', err);
+            Alert.alert('Error', err?.message || 'Failed to close the room');
+          }
+        },
+      },
+    ]);
   };
 
   const addPeer = (peerId, peerName, type) => {
@@ -1862,10 +1986,26 @@ const App = () => {
                   disabled={!sdkInstanceRef.current}>
                   <Text style={styles.buttonText}>Leave Room</Text>
                 </TouchableOpacity>
+                {isModeratorRole && (
+                  <TouchableOpacity
+                    style={[styles.button, styles.secondaryButton]}
+                    onPress={closeRoomForAll}
+                    disabled={!sdkInstanceRef.current}>
+                    <Text style={styles.buttonText}>End for All</Text>
+                  </TouchableOpacity>
+                )}
               </>
             )}
           </View>
           <Text style={styles.statusText}>{callStatus}</Text>
+          {viewerInfo && (
+            <Text style={styles.statusText}>
+              Viewers: {viewerInfo.count}
+              {viewerInfo.participantTotal != null
+                ? ` · Everyone in the event: ${viewerInfo.participantTotal}`
+                : ''}
+            </Text>
+          )}
 
           <TouchableOpacity
             style={styles.deviceButton}
