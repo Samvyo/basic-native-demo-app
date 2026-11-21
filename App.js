@@ -561,9 +561,35 @@ const App = () => {
       sdkInstanceRef.current.on('aiAgentStarted', ({attached, requested, wholeRoom, targets}) => {
         console.log('AI agent started', {attached, requested, wholeRoom, targets});
       });
-      sdkInstanceRef.current.on('aiAgentError', ({text, reason, retracted}) => {
-        console.log('AI agent error', {text, reason, retracted});
-        Alert.alert('AI Agent', text || 'Something went wrong with the AI agent');
+      sdkInstanceRef.current.on('aiAgentStarting', ({text, waitSec, queued}) => {
+        // No AI server was free; one is starting. aiAgentStarted or
+        // aiAgentError still follows — this is progress, not a result.
+        console.log('AI agent starting', {text, waitSec, queued});
+        setCallStatus(
+          text ||
+            `AI assistant is starting${waitSec ? ` (about ${waitSec}s)` : ''}${
+              queued ? ' — queued behind an earlier start' : ''
+            }…`,
+        );
+      });
+      sdkInstanceRef.current.on('aiAgentError', err => {
+        const {text, reason, retracted, missing, provider, leg, settings, retriable} = err;
+        console.log('AI agent error', err);
+        let detail = text || 'Something went wrong with the AI agent';
+        if (reason === 'ai_no_key' && missing?.length) {
+          detail += `\nMissing keys: ${missing.join(', ')}`;
+        } else if (reason === 'ai_invalid_key' && (provider || leg)) {
+          detail += `\nRejected key: ${provider || '?'} (${leg || '?'})`;
+        } else if (settings?.length) {
+          detail += `\nAn org admin must enable: ${settings.join(' or ')}`;
+        }
+        if (retracted) {
+          detail += '\n(The AI agent that had started has stopped.)';
+        }
+        if (retriable === false) {
+          detail += '\nRetrying will not help.';
+        }
+        Alert.alert('AI Agent', detail);
       });
       sdkInstanceRef.current.on('aiConsentRequest', request => {
         console.log('AI consent request', request);
@@ -2753,6 +2779,13 @@ const App = () => {
                   : ''}
                 .
               </Text>
+              {/* Disclosures: a closed list of things the prompt must say. */}
+              {pendingAiConsent?.disclosures?.includes('knowledge_service') && (
+                <Text style={styles.helperText}>
+                  Questions asked in this meeting may be sent to your
+                  organisation’s own knowledge service.
+                </Text>
+              )}
               {pendingAiConsent?.streams.map(stream => (
                 <View key={stream.mediaTag} style={styles.toggleRow}>
                   <Text>{stream.mediaTag}</Text>
