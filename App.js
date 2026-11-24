@@ -26,6 +26,7 @@ const App = () => {
   // Lifecycle listeners (join refusal, room close, …) are attached once per
   // SDK instance, BEFORE joinRoom, so events fired during the join are seen.
   const lifecycleAttachedRef = useRef(null);
+  const callListenersAttachedRef = useRef(null);
   const [roomId, setRoomId] = useState('');
   const [peerName, setPeerName] = useState('peer-1');
   const sdkInstanceRef = useRef(null);
@@ -348,11 +349,10 @@ const App = () => {
 
       console.log('Joining room with SDK');
       console.log('SDK instance', sdkInstanceRef.current);
-      attachCallLifecycleListeners(sdkInstanceRef.current);
-      await sdkInstanceRef.current.joinRoom(roomParams);
-
-      console.log('Room joined successfully');
-      setCallStatus('Call started successfully!');
+      // Clear the previous call's state, then attach the call listeners
+      // BEFORE joinRoom(): the SDK announces you (newPeer type local,
+      // micStart/videoStart) during the join itself, so listeners added
+      // after `await joinRoom()` miss your own tile. Once per SDK instance.
       setHandRaised(false);
       setHandRaiseEvents([]);
       setRecentReactions([]);
@@ -371,265 +371,295 @@ const App = () => {
       setMyAiConsentError(null);
       setAiObservations([]);
 
-      // Set up event listeners
-      console.log('Setting up event listeners');
+      if (callListenersAttachedRef.current !== sdkInstanceRef.current) {
+        callListenersAttachedRef.current = sdkInstanceRef.current;
+        // Set up event listeners
+        console.log('Setting up event listeners');
 
-      sdkInstanceRef.current.on('newPeer', ({peerId, peerName, type}) => {
-        console.log('New peer joined', {peerId, peerName, type});
-        addPeer(peerId, peerName, type);
-      });
-
-      sdkInstanceRef.current.on('videoStart', ({peerId, videoTrack, type}) => {
-        console.log('Video started for peer', {
-          peerId,
-          type,
-          hasVideoTrack: !!videoTrack,
-          videoTrackType: videoTrack ? typeof videoTrack : 'none',
-          videoTrackMethods: videoTrack
-            ? Object.getOwnPropertyNames(Object.getPrototypeOf(videoTrack))
-            : [],
+        sdkInstanceRef.current.on('newPeer', ({peerId, peerName, type}) => {
+          console.log('New peer joined', {peerId, peerName, type});
+          addPeer(peerId, peerName, type);
         });
-        updatePeerVideo(peerId, videoTrack, type);
-      });
 
-      sdkInstanceRef.current.on('videoEnd', ({peerId, type}) => {
-        console.log('Video ended for peer', {peerId, type});
-        removePeerVideo(peerId, type);
-      });
-
-      sdkInstanceRef.current.on('deviceListUpdated', () => {
-        console.log('Device list updated');
-        getAllDevices();
-      });
-
-      sdkInstanceRef.current.on('processingCompleted', details => {
-        console.log(`Processing has been completed`, details);
-        setIsProcessing(false);
-      });
-
-      sdkInstanceRef.current.on('recordingStarted', ({peerId, startTime}) => {
-        console.log(`Recording has been started in this room at ${startTime}`);
-        alert(`Recording has been started on the room at: ${startTime}`);
-        setIsRecording(true);
-      });
-
-      sdkInstanceRef.current.on('recordingEnded', ({reason, savedUntil} = {}) => {
-        console.log('Recording ended', {reason, savedUntil});
-        setIsRecording(false);
-        if (reason === 'server_lost') {
-          // The recording server died mid-recording. What was captured up to
-          // savedUntil is kept; the SDK does not retry, so offer a restart.
-          Alert.alert(
-            'Recording interrupted',
-            `The recording server was lost. Saved up to ${
-              savedUntil ? new Date(savedUntil).toLocaleTimeString() : 'an unknown time'
-            }.` + (isModeratorRoleRef.current ? ' You can start recording again.' : ''),
-          );
-        } else if (reason) {
-          Alert.alert('Recording ended', `Stopped by the server (${reason})`);
-        } else {
-          Alert.alert('Recording ended', 'Recording has been ended on the room');
-        }
-      });
-
-      sdkInstanceRef.current.on('micStart', ({peerId, audioTrack, type}) => {
-        console.log('Mic started for peer', {
-          peerId,
-          hasAudioTrack: !!audioTrack,
-          type,
-        });
-        updatePeerAudio(peerId, audioTrack, type);
-      });
-
-      sdkInstanceRef.current.on('micEnd', ({peerId}) => {
-        console.log('Mic ended for peer', {peerId});
-        removePeerAudio(peerId);
-      });
-
-      sdkInstanceRef.current.on('peerMuted', ({peerId, type}) => {
-        console.log('Peer muted', {peerId, type});
-        updatePeerMuteStatus(peerId, true);
-      });
-
-      sdkInstanceRef.current.on('peerUnMuted', ({peerId, type}) => {
-        console.log('Peer unmuted', {peerId, type});
-        updatePeerMuteStatus(peerId, false);
-      });
-
-      sdkInstanceRef.current.on('peerLeft', ({peerId}) => {
-        console.log('Peer left', {peerId});
-        removePeer(peerId);
-      });
-
-      sdkInstanceRef.current.on(
-        'ssVideoStart',
-        ({peerId, videoTrack, type}) => {
-          console.log('Screen share started', {
+        sdkInstanceRef.current.on('videoStart', ({peerId, videoTrack, type}) => {
+          console.log('Video started for peer', {
             peerId,
+            type,
             hasVideoTrack: !!videoTrack,
             videoTrackType: videoTrack ? typeof videoTrack : 'none',
+            videoTrackMethods: videoTrack
+              ? Object.getOwnPropertyNames(Object.getPrototypeOf(videoTrack))
+              : [],
+          });
+          updatePeerVideo(peerId, videoTrack, type);
+        });
+
+        sdkInstanceRef.current.on('videoEnd', ({peerId, type}) => {
+          console.log('Video ended for peer', {peerId, type});
+          removePeerVideo(peerId, type);
+        });
+
+        sdkInstanceRef.current.on('deviceListUpdated', () => {
+          console.log('Device list updated');
+          getAllDevices();
+        });
+
+        sdkInstanceRef.current.on('processingCompleted', details => {
+          console.log(`Processing has been completed`, details);
+          setIsProcessing(false);
+        });
+
+        sdkInstanceRef.current.on('recordingStarted', ({peerId, startTime}) => {
+          console.log(`Recording has been started in this room at ${startTime}`);
+          alert(`Recording has been started on the room at: ${startTime}`);
+          setIsRecording(true);
+        });
+
+        sdkInstanceRef.current.on('recordingEnded', ({reason, savedUntil} = {}) => {
+          console.log('Recording ended', {reason, savedUntil});
+          setIsRecording(false);
+          if (reason === 'server_lost') {
+            // The recording server died mid-recording. What was captured up to
+            // savedUntil is kept; the SDK does not retry, so offer a restart.
+            Alert.alert(
+              'Recording interrupted',
+              `The recording server was lost. Saved up to ${
+                savedUntil ? new Date(savedUntil).toLocaleTimeString() : 'an unknown time'
+              }.` + (isModeratorRoleRef.current ? ' You can start recording again.' : ''),
+            );
+          } else if (reason) {
+            Alert.alert('Recording ended', `Stopped by the server (${reason})`);
+          } else {
+            Alert.alert('Recording ended', 'Recording has been ended on the room');
+          }
+        });
+
+        sdkInstanceRef.current.on('micStart', ({peerId, audioTrack, type}) => {
+          console.log('Mic started for peer', {
+            peerId,
+            hasAudioTrack: !!audioTrack,
             type,
           });
-          addScreenShare(peerId, videoTrack, type);
-        },
-      );
+          updatePeerAudio(peerId, audioTrack, type);
+        });
 
-      sdkInstanceRef.current.on('ssVideoStop', ({peerId, videoTrack, type}) => {
-        console.log('Screen share stopped', {peerId, type});
-        removeScreenShare(peerId);
-      });
+        sdkInstanceRef.current.on('micEnd', ({peerId}) => {
+          console.log('Mic ended for peer', {peerId});
+          removePeerAudio(peerId);
+        });
 
-      sdkInstanceRef.current.on('customMessage', handleCustomMessageEvent);
-      sdkInstanceRef.current.on('handRaise', handleHandRaiseEvent);
-      sdkInstanceRef.current.on('liveStreamingStarted', () => {
-        setIsLiveStreaming(true);
-        Alert.alert('Live Streaming', 'Live streaming has started');
-      });
-      sdkInstanceRef.current.on('liveStreamingEnded', ({reason} = {}) => {
-        setIsLiveStreaming(false);
-        Alert.alert(
-          'Live Streaming',
-          reason === 'server_lost'
-            ? 'Live streaming ended: the recording server carrying it was lost'
-            : reason
-            ? `Live streaming ended by the server (${reason})`
-            : 'Live streaming has ended',
+        sdkInstanceRef.current.on('peerMuted', ({peerId, type}) => {
+          console.log('Peer muted', {peerId, type});
+          updatePeerMuteStatus(peerId, true);
+        });
+
+        sdkInstanceRef.current.on('peerUnMuted', ({peerId, type}) => {
+          console.log('Peer unmuted', {peerId, type});
+          updatePeerMuteStatus(peerId, false);
+        });
+
+        sdkInstanceRef.current.on('peerLeft', ({peerId}) => {
+          console.log('Peer left', {peerId});
+          removePeer(peerId);
+        });
+
+        sdkInstanceRef.current.on(
+          'ssVideoStart',
+          ({peerId, videoTrack, type}) => {
+            console.log('Screen share started', {
+              peerId,
+              hasVideoTrack: !!videoTrack,
+              videoTrackType: videoTrack ? typeof videoTrack : 'none',
+              type,
+            });
+            addScreenShare(peerId, videoTrack, type);
+          },
         );
-      });
-      sdkInstanceRef.current.on('transcription', handleTranscriptionEvent);
-      sdkInstanceRef.current.on('micForcedOff', ({message}) => {
-        setIsMuted(true);
-        Alert.alert('Microphone', message || 'Moderator muted you');
-      });
-      sdkInstanceRef.current.on('upgradeRequestReceived', handleUpgradeRequestReceived);
-      sdkInstanceRef.current.on('upgradeRequestCancelled', handleUpgradeRequestCancelled);
-      sdkInstanceRef.current.on('upgradeRequestRejected', ({message}) => {
-        Alert.alert('Upgrade Request', message || 'Request rejected');
-      });
-      sdkInstanceRef.current.on('upgradeLimitReached', ({message}) => {
-        Alert.alert('Upgrade Limit', message);
-      });
-      sdkInstanceRef.current.on(
-        'screenShareLimitReached',
-        ({message}) => Alert.alert('Screen Share Limit', message),
-      );
-      sdkInstanceRef.current.on('roomLockStatusChanged', ({locked, message}) => {
-        setRoomLocked(!!locked);
-        if (message) {
-          Alert.alert('Room Lock Status', message);
-        }
-      });
-      sdkInstanceRef.current.on('peersWaiting', ({peersWaiting, count}) => {
-        setWaitingPeers(peersWaiting || []);
-        if (isModeratorRole && count) {
-          Alert.alert('Waiting Room', `${count} participant(s) waiting for approval`);
-        }
-      });
-      sdkInstanceRef.current.on('participantUpgraded', handleParticipantRoleUpdate);
-      sdkInstanceRef.current.on('participantDowngraded', handleParticipantRoleUpdate);
-      sdkInstanceRef.current.on('upgraded', () => {
-        setCallStatus('You are now a presenter');
-      });
-      sdkInstanceRef.current.on('downgraded', () => {
-        setCallStatus('You are now a viewer');
-      });
 
-      // ---- Resilience/observability (SDK parity) ----
-      // The SDK already handles reconnection internally with zero app
-      // involvement; these exist purely so a real disconnect/expiry is
-      // visible during testing instead of happening invisibly.
-      // terminalClose / sessionExpired: the SDK will not reconnect, so the
-      // call is over — tear the UI down (same as the native Android demo).
-      sdkInstanceRef.current.on('terminalClose', ({code, category, reason}) => {
-        console.log('Terminal close', {code, category, reason});
-        const why =
-          category === 'insufficient_credit'
-            ? 'The organisation has run out of credit.'
-            : category === 'p2p_minutes_exhausted'
-            ? 'The monthly P2P minutes are used up.'
-            : category || reason || 'Unknown reason';
-        resetCallUi(`Connection closed (${code}): ${why}`);
-        Alert.alert('Connection closed', `${why} (code ${code})`);
-      });
-      sdkInstanceRef.current.on('sessionExpired', ({code, reason}) => {
-        console.log('Session expired', {code, reason});
-        resetCallUi('Session expired');
-        Alert.alert('Session expired', 'Please rejoin the room');
-      });
+        sdkInstanceRef.current.on('ssVideoStop', ({peerId, videoTrack, type}) => {
+          console.log('Screen share stopped', {peerId, type});
+          removeScreenShare(peerId);
+        });
 
-      // ---- AI Agent (SDK parity) ----
-      sdkInstanceRef.current.on('aiAgentStarted', ({attached, requested, wholeRoom, targets}) => {
-        console.log('AI agent started', {attached, requested, wholeRoom, targets});
-      });
-      sdkInstanceRef.current.on('aiAgentStarting', ({text, waitSec, queued}) => {
-        // No AI server was free; one is starting. aiAgentStarted or
-        // aiAgentError still follows — this is progress, not a result.
-        console.log('AI agent starting', {text, waitSec, queued});
-        setCallStatus(
-          text ||
-            `AI assistant is starting${waitSec ? ` (about ${waitSec}s)` : ''}${
-              queued ? ' — queued behind an earlier start' : ''
-            }…`,
+        sdkInstanceRef.current.on('customMessage', handleCustomMessageEvent);
+        sdkInstanceRef.current.on('handRaise', handleHandRaiseEvent);
+        sdkInstanceRef.current.on('liveStreamingStarted', () => {
+          setIsLiveStreaming(true);
+          Alert.alert('Live Streaming', 'Live streaming has started');
+        });
+        sdkInstanceRef.current.on('liveStreamingEnded', ({reason} = {}) => {
+          setIsLiveStreaming(false);
+          Alert.alert(
+            'Live Streaming',
+            reason === 'server_lost'
+              ? 'Live streaming ended: the recording server carrying it was lost'
+              : reason
+              ? `Live streaming ended by the server (${reason})`
+              : 'Live streaming has ended',
+          );
+        });
+        sdkInstanceRef.current.on('transcription', handleTranscriptionEvent);
+        sdkInstanceRef.current.on('micForcedOff', ({message}) => {
+          setIsMuted(true);
+          Alert.alert('Microphone', message || 'Moderator muted you');
+        });
+        sdkInstanceRef.current.on('upgradeRequestReceived', handleUpgradeRequestReceived);
+        sdkInstanceRef.current.on('upgradeRequestCancelled', handleUpgradeRequestCancelled);
+        sdkInstanceRef.current.on('upgradeRequestRejected', ({message}) => {
+          Alert.alert('Upgrade Request', message || 'Request rejected');
+        });
+        sdkInstanceRef.current.on('upgradeLimitReached', ({message}) => {
+          Alert.alert('Upgrade Limit', message);
+        });
+        sdkInstanceRef.current.on(
+          'screenShareLimitReached',
+          ({message}) => Alert.alert('Screen Share Limit', message),
         );
-      });
-      sdkInstanceRef.current.on('aiAgentError', err => {
-        const {text, reason, retracted, missing, provider, leg, settings, retriable} = err;
-        console.log('AI agent error', err);
-        let detail = text || 'Something went wrong with the AI agent';
-        if (reason === 'ai_no_key' && missing?.length) {
-          detail += `\nMissing keys: ${missing.join(', ')}`;
-        } else if (reason === 'ai_invalid_key' && (provider || leg)) {
-          detail += `\nRejected key: ${provider || '?'} (${leg || '?'})`;
-        } else if (settings?.length) {
-          detail += `\nAn org admin must enable: ${settings.join(' or ')}`;
-        }
-        if (retracted) {
-          detail += '\n(The AI agent that had started has stopped.)';
-        }
-        if (retriable === false) {
-          detail += '\nRetrying will not help.';
-        }
-        Alert.alert('AI Agent', detail);
-      });
-      sdkInstanceRef.current.on('aiConsentRequest', request => {
-        console.log('AI consent request', request);
-        setPendingAiConsent(request);
-        setAiConsentChecked({}); // never carry ticks over from a previous request
-        setAiConsentError(null);
-      });
-      sdkInstanceRef.current.on('aiConsentExpired', ({pending}) => {
-        console.log('AI consent expired', {pending});
-        // Render exactly what the SDK says is still open — never run our
-        // own timer to guess this.
-        setPendingAiConsent(pending);
-        if (!pending) {
-          setAiConsentChecked({});
+        sdkInstanceRef.current.on('roomLockStatusChanged', ({locked, message}) => {
+          setRoomLocked(!!locked);
+          if (message) {
+            Alert.alert('Room Lock Status', message);
+          }
+        });
+        sdkInstanceRef.current.on('peersWaiting', ({peersWaiting, count}) => {
+          setWaitingPeers(peersWaiting || []);
+          if (isModeratorRole && count) {
+            Alert.alert('Waiting Room', `${count} participant(s) waiting for approval`);
+          }
+        });
+        sdkInstanceRef.current.on('participantUpgraded', handleParticipantRoleUpdate);
+        sdkInstanceRef.current.on('participantDowngraded', handleParticipantRoleUpdate);
+        sdkInstanceRef.current.on('upgraded', () => {
+          setCallStatus('You are now a presenter');
+        });
+        sdkInstanceRef.current.on('downgraded', () => {
+          setCallStatus('You are now a viewer');
+        });
+
+        // ---- Resilience/observability (SDK parity) ----
+        // The SDK already handles reconnection internally with zero app
+        // involvement; these exist purely so a real disconnect/expiry is
+        // visible during testing instead of happening invisibly.
+        // terminalClose / sessionExpired: the SDK will not reconnect, so the
+        // call is over — tear the UI down (same as the native Android demo).
+        sdkInstanceRef.current.on('terminalClose', ({code, category, reason}) => {
+          console.log('Terminal close', {code, category, reason});
+          const why =
+            category === 'insufficient_credit'
+              ? 'The organisation has run out of credit.'
+              : category === 'p2p_minutes_exhausted'
+              ? 'The monthly P2P minutes are used up.'
+              : category || reason || 'Unknown reason';
+          resetCallUi(`Connection closed (${code}): ${why}`);
+          Alert.alert('Connection closed', `${why} (code ${code})`);
+        });
+        sdkInstanceRef.current.on('sessionExpired', ({code, reason}) => {
+          console.log('Session expired', {code, reason});
+          resetCallUi('Session expired');
+          Alert.alert('Session expired', 'Please rejoin the room');
+        });
+
+        // ---- AI Agent (SDK parity) ----
+        sdkInstanceRef.current.on('aiAgentStarted', ({attached, requested, wholeRoom, targets}) => {
+          console.log('AI agent started', {attached, requested, wholeRoom, targets});
+        });
+        sdkInstanceRef.current.on('aiAgentStarting', ({text, waitSec, queued}) => {
+          // No AI server was free; one is starting. aiAgentStarted or
+          // aiAgentError still follows — this is progress, not a result.
+          console.log('AI agent starting', {text, waitSec, queued});
+          setCallStatus(
+            text ||
+              `AI assistant is starting${waitSec ? ` (about ${waitSec}s)` : ''}${
+                queued ? ' — queued behind an earlier start' : ''
+              }…`,
+          );
+        });
+        sdkInstanceRef.current.on('aiAgentError', err => {
+          const {text, reason, retracted, missing, provider, leg, settings, retriable} = err;
+          console.log('AI agent error', err);
+          let detail = text || 'Something went wrong with the AI agent';
+          if (reason === 'ai_no_key' && missing?.length) {
+            detail += `\nMissing keys: ${missing.join(', ')}`;
+          } else if (reason === 'ai_invalid_key' && (provider || leg)) {
+            detail += `\nRejected key: ${provider || '?'} (${leg || '?'})`;
+          } else if (settings?.length) {
+            detail += `\nAn org admin must enable: ${settings.join(' or ')}`;
+          }
+          if (retracted) {
+            detail += '\n(The AI agent that had started has stopped.)';
+          }
+          if (retriable === false) {
+            detail += '\nRetrying will not help.';
+          }
+          Alert.alert('AI Agent', detail);
+        });
+        sdkInstanceRef.current.on('aiConsentRequest', request => {
+          console.log('AI consent request', request);
+          setPendingAiConsent(request);
+          setAiConsentChecked({}); // never carry ticks over from a previous request
           setAiConsentError(null);
-        }
-      });
-      sdkInstanceRef.current.on('aiConsentNotApplied', notApplied => {
-        console.log('AI consent not applied', notApplied);
-        setAiConsentError('That request has already closed, so your answer was not applied.');
-      });
-      sdkInstanceRef.current.on('aiMyConsent', ({streams, consentRequired}) => {
-        console.log('AI my consent updated', {streams, consentRequired});
-        setMyAiStreams(streams || []);
-        setAiConsentRequiredForRoom(consentRequired !== false);
-      });
-      sdkInstanceRef.current.on('aiSelectableStreams', rows => {
-        console.log('AI selectable streams updated', rows);
-        setAiRows(rows || []);
-        setAiTicked(
-          new Set(
-            (rows || [])
-              .filter(r => r.selected)
-              .map(r => `${r.peerId}:${r.mediaTag}`),
-          ),
-        );
-      });
-      sdkInstanceRef.current.on('aiAnalysis', observation => {
-        setAiObservations(prev => [...prev.slice(-49), observation]);
-      });
+        });
+        sdkInstanceRef.current.on('aiConsentExpired', ({pending}) => {
+          console.log('AI consent expired', {pending});
+          // Render exactly what the SDK says is still open — never run our
+          // own timer to guess this.
+          setPendingAiConsent(pending);
+          if (!pending) {
+            setAiConsentChecked({});
+            setAiConsentError(null);
+          }
+        });
+        sdkInstanceRef.current.on('aiConsentNotApplied', notApplied => {
+          console.log('AI consent not applied', notApplied);
+          setAiConsentError('That request has already closed, so your answer was not applied.');
+        });
+        sdkInstanceRef.current.on('aiMyConsent', ({streams, consentRequired}) => {
+          console.log('AI my consent updated', {streams, consentRequired});
+          setMyAiStreams(streams || []);
+          setAiConsentRequiredForRoom(consentRequired !== false);
+        });
+        sdkInstanceRef.current.on('aiSelectableStreams', rows => {
+          console.log('AI selectable streams updated', rows);
+          setAiRows(rows || []);
+          setAiTicked(
+            new Set(
+              (rows || [])
+                .filter(r => r.selected)
+                .map(r => `${r.peerId}:${r.mediaTag}`),
+            ),
+          );
+        });
+        sdkInstanceRef.current.on('aiAnalysis', observation => {
+          setAiObservations(prev => [...prev.slice(-49), observation]);
+        });
+
+        // R22: later details about yourself come as localPeerUpdated. If the
+        // first self newPeer was missed, add the self tile (never overwrite it).
+        sdkInstanceRef.current.on('localPeerUpdated', ({peerId: selfId, peerName: selfName}) => {
+          setPeers(prevPeers => {
+            if (!selfId || prevPeers.has(selfId)) {
+              return prevPeers;
+            }
+            const newPeers = new Map(prevPeers);
+            newPeers.set(selfId, {
+              peerId: selfId,
+              peerName: selfName,
+              type: 'local',
+              videoTrack: null,
+              audioTrack: null,
+              isMuted: false,
+              isCameraOff: false,
+            });
+            return newPeers;
+          });
+        });
+      }
+
+      attachCallLifecycleListeners(sdkInstanceRef.current);
+      await sdkInstanceRef.current.joinRoom(roomParams);
+
+      console.log('Room joined successfully');
+      setCallStatus('Call started successfully!');
 
       // Seed AI state from the SDK's own getters/requests right after join —
       // a panel that mounts after something already happened must not show
@@ -690,6 +720,7 @@ const App = () => {
     setBackStagePeersInput('');
     sdkInstanceRef.current = null;
     lifecycleAttachedRef.current = null;
+    callListenersAttachedRef.current = null;
     setIsRoomInitialized(false);
     if (status) {
       setCallStatus(status);
