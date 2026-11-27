@@ -376,9 +376,9 @@ const App = () => {
         // Set up event listeners
         console.log('Setting up event listeners');
 
-        sdkInstanceRef.current.on('newPeer', ({peerId, peerName, type}) => {
+        sdkInstanceRef.current.on('newPeer', ({peerId, peerName, type, peerRole}) => {
           console.log('New peer joined', {peerId, peerName, type});
-          addPeer(peerId, peerName, type);
+          addPeer(peerId, peerName, type, peerRole);
         });
 
         sdkInstanceRef.current.on('videoStart', ({peerId, videoTrack, type}) => {
@@ -635,7 +635,7 @@ const App = () => {
 
         // R22: later details about yourself come as localPeerUpdated. If the
         // first self newPeer was missed, add the self tile (never overwrite it).
-        sdkInstanceRef.current.on('localPeerUpdated', ({peerId: selfId, peerName: selfName}) => {
+        sdkInstanceRef.current.on('localPeerUpdated', ({peerId: selfId, peerName: selfName, peerRole: selfRole}) => {
           setPeers(prevPeers => {
             if (!selfId || prevPeers.has(selfId)) {
               return prevPeers;
@@ -645,6 +645,7 @@ const App = () => {
               peerId: selfId,
               peerName: selfName,
               type: 'local',
+              peerRole: selfRole,
               videoTrack: null,
               audioTrack: null,
               isMuted: false,
@@ -823,7 +824,7 @@ const App = () => {
     ]);
   };
 
-  const addPeer = (peerId, peerName, type) => {
+  const addPeer = (peerId, peerName, type, peerRole) => {
     console.log('Adding peer', {peerId, peerName, type});
     setPeers(prevPeers => {
       const newPeers = new Map(prevPeers);
@@ -831,6 +832,9 @@ const App = () => {
         peerId,
         peerName,
         type,
+        // Role from the SDK roster; gates roomSetting:* frames (see
+        // handleCustomMessageEvent).
+        peerRole,
         videoTrack: null,
         audioTrack: null,
         isMuted: false,
@@ -1180,6 +1184,18 @@ const App = () => {
         ];
         return next;
       });
+      return;
+    }
+
+    // Room settings are applied only when the sender is a moderator in the
+    // SDK roster (`from` is set by the server). A customMessage can be sent by
+    // anyone, so without this a participant could make our UI show a settings
+    // change that never happened.
+    if (
+      typeof payload.type === 'string' &&
+      payload.type.startsWith('roomSetting:') &&
+      peersRef.current.get(message.from)?.peerRole !== 'moderator'
+    ) {
       return;
     }
 
